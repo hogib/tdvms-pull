@@ -128,8 +128,29 @@ def _reap(ledger, pool, cfg, mailbox, out, log):
                 ok = _handle_links(ledger, pool, cfg, event, out, log)
             else:
                 ok = True         # portal mail we have no use for; consume it
-            if not cfg.dry_run:
+            if cfg.dry_run:
+                continue
+            try:
                 mailbox.consume(conn, event.uid, ok)
+            except Exception as e:
+                # The connection died while we were busy, and an 884 MB fetch
+                # takes long enough for a mail server to drop an idle session --
+                # Gmail does, and it killed the whole loop right after filing
+                # the archive. The ledger write already happened, so nothing is
+                # lost; the message stays unread and is re-read next cycle,
+                # where the already-banked check retires it without
+                # re-downloading. Abandon the rest of THIS pass, because every
+                # further consume on a dead socket raises the same way.
+                out.notes.append(f"mail connection dropped mid-pass "
+                                 f"({type(e).__name__})")
+                log(f"  mail connection dropped after the download "
+                    f"({type(e).__name__}) — the ledger is already written; "
+                    f"the message stays unread and is skipped next cycle")
+                break
+    except Exception as e:
+        # Same reasoning one level up: a mail problem must not stop submissions.
+        out.notes.append(f"reap failed ({type(e).__name__}: {e})")
+        log(f"  reap: {type(e).__name__}: {e} — carrying on to the queue")
     finally:
         try:
             conn.logout()
@@ -314,6 +335,30 @@ def _reclaim(ledger, cfg, out, log):
         log(f"  [RECLAIM] {cid} — {why} after {age/60:.0f} min; attempt {attempts}")
 
 
+def _retire_station(ledger, station, why, out, log):
+    """Retires every pending chunk for a station, once and immediately.
+
+    A permanent rejection is a fact about the STATION, not about the window. A
+    station the portal does not list will not be listed on the next window
+    either, so there is nothing to learn by asking again -- and asking again is
+    expensive: a ledger planned as `TU.KAND` rather than `KAND` submitted and
+    failed all 40 of its windows, one per free slot per cycle, because the only
+    retirement rule counted no-data answers. One rejection is enough.
+    """
+    doomed = [r for r in ledger.rows()
+              if r["station"] == station and r["state"] == "pending"]
+    if not doomed:
+        return
+    for row in doomed:
+        cid = chunk_id(row["station"], row["start"])
+        ledger.update(cid, state="retired", email=None,
+                      note=f"station retired after a permanent rejection: {why}")
+        out.retired.append(cid)
+    log(f"  [RETIRE] {station}: {why}\n"
+        f"           {len(doomed)} pending chunk(s) retired — the next window "
+        f"would fail the same way")
+
+
 # --- 3. retire -------------------------------------------------------------
 
 def _retire(ledger, cfg, out, log):
@@ -419,6 +464,8 @@ def _record(ledger, pool, slot, cid, row, result, cfg, out, log):
                           note=result.detail)
             out.rejected.append(cid)
             log(f"  [FAILED] {cid} — {result.detail}")
+            if result.permanent:
+                _retire_station(ledger, row["station"], result.detail, out, log)
         else:
             ledger.release(cid, note=result.detail)
             ledger.update(cid, attempts=attempts)

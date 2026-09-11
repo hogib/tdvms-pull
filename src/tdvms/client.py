@@ -83,6 +83,21 @@ class Client:
         self.timeout = timeout
         self.session = session or requests.Session()
         self._devices = {}
+        self._codes = None
+
+    def station_codes(self):
+        """Every station code the portal lists, for validating a plan.
+
+        Cached with the device codes and for the same reason: one round trip a
+        process, not one a chunk.
+        """
+        if self._codes is None:
+            r = self.session.post(STATIONS_URL,
+                                  json={"netcodes": ["TU"], "deviceCode": "",
+                                        "component": ""}, timeout=30)
+            r.raise_for_status()
+            self._codes = [s["code"] for s in r.json()]
+        return self._codes
 
     def device_code(self, station):
         """The instrument code the portal will accept for this station.

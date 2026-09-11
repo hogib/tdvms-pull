@@ -17,8 +17,56 @@ NAME = "plan"
 HELP = "enumerate a station's chunks into the ledger (idempotent)"
 
 
+def normalise(code):
+    """`"TU.KAND"` -> `"KAND"`. The portal lists BARE codes; none has a dot.
+
+    The network is already in the submission payload (`"networks": ["TU"]`), so
+    a network-qualified code reaches the portal as a station name that cannot
+    exist and every window fails permanently. A ledger planned as `TU.KAND` had
+    all 40 of its chunks rejected that way -- and each rejection looked like a
+    station problem rather than a typo, because the portal's answer is the same
+    either way.
+    """
+    return code.rsplit(".", 1)[-1].strip().upper()
+
+
+def verify(station, client=None):
+    """Refuses a station the portal does not list, and says what it does list.
+
+    Checked at PLAN time, where it costs one round trip and the fix is to retype
+    a word. Left to submission time it costs one queue slot per window, and the
+    error arrives once per cycle for as long as the campaign runs.
+
+    Raises:
+        SystemExit: If the code is not listed. Near-matches are printed, which
+            is what turns "not in the station list" into an actionable message.
+    """
+    from tdvms.client import Client
+    client = client or Client()
+    try:
+        codes = client.station_codes()
+    except Exception as e:
+        # The portal being unreachable is not a reason to refuse to plan --
+        # planning is local bookkeeping and the campaign may be offline.
+        print(f"  [!] could not reach the station list ({type(e).__name__}); "
+              f"planning {station} unverified")
+        return
+    if station in codes:
+        return
+    near = [c for c in codes if c.startswith(station[:2])][:8]
+    sys.exit(f"[ERROR] the portal does not list {station!r}.\n"
+             f"        It lists {len(codes)} TU stations, bare codes with no "
+             f"network prefix.\n"
+             f"        Closest by prefix: {', '.join(near) or '(none)'}\n"
+             f"        Pass --no-verify to plan it anyway.")
+
+
 def add_args(p):
     p.add_argument("--station", required=True, help="bare code, e.g. ELBA")
+    p.add_argument("--no-verify", dest="verify", action="store_false",
+                   help="skip the check that the portal lists this station. The "
+                        "check costs one round trip here and saves one queue "
+                        "slot per window later.")
     p.add_argument("--start", default="2024-05-01")
     p.add_argument("--end", default="2026-08-10")
     p.add_argument("--chunk-days", type=int, default=21,
@@ -45,12 +93,18 @@ def enumerate_chunks(ledger, station, start, end, chunk_days):
 
 
 def run(args):
+    station = normalise(args.station)
+    if station != args.station:
+        print(f"  station {args.station!r} -> {station!r} "
+              f"(the portal lists bare codes; the network is in the payload)")
+    if args.verify:
+        verify(station)
     ledger = Ledger(args.ledger)
-    added = enumerate_chunks(ledger, args.station, args.start, args.end,
+    added = enumerate_chunks(ledger, station, args.start, args.end,
                              args.chunk_days)
     rows = ledger.rows()
     pending = sum(1 for r in rows if r["state"] == "pending")
-    print(f"planned {added} new chunk(s) for {args.station} at {args.chunk_days} d")
+    print(f"planned {added} new chunk(s) for {station} at {args.chunk_days} d")
     print(f"ledger holds {len(rows)} chunk(s), {pending} pending")
     return 0
 
