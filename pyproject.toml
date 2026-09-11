@@ -1,0 +1,33 @@
+[project]
+name = "tdvms"
+version = "0.1.0"
+description = "A self-supervising AFAD/TDVMS download campaign: submit, fetch and free the slot in one process"
+readme = "README.md"
+authors = [
+    { name = "Oguzb", email = "hoguzbolat@gmail.com" }
+]
+requires-python = ">=3.12"
+# `requests` talks to the portal and downloads the archives. Everything else --
+# the ledger, the lock, the mailbox -- is standard library on purpose: this runs
+# unattended for days on a box whose other job is a 31 GB feature extraction,
+# and a dependency that fails to import at 3 a.m. costs a queue slot.
+dependencies = [
+    "requests>=2.32",
+]
+
+[project.scripts]
+tdvms = "tdvms.cli:main"
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["uv_build>=0.12.10,<0.13.0"]
+build-backend = "uv_build"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# Every failure this tool exists to prevent is a QUIET one: a slot held against
+# a request nobody made, a station that answers nothing for a month, a reset
+# that lands on the wrong station. None of them raise.
+addopts = "-ra --strict-markers"

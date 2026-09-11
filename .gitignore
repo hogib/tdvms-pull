@@ -1,0 +1,9 @@
+.venv/
+__pycache__/
+*.pyc
+# The campaign's state and its downloads. The ledger is per-operator and the
+# archives are tens of gigabytes; neither belongs in the repo.
+tdvms_ledger.jsonl
+*.jsonl.lock
+*.jsonl.tmp
+afad_raw/
