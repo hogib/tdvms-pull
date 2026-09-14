@@ -52,11 +52,19 @@ def verify(station, client=None):
               f"planning {station} unverified")
         return
     if station in codes:
+        try:
+            net = client.station_network(station)
+            dev = client.device_code(station)
+            if net != "TU" or dev != "H":
+                print(f"  [i] {station} is network {net}, instrument {dev}")
+        except Exception:
+            pass
         return
     near = [c for c in codes if c.startswith(station[:2])][:8]
     sys.exit(f"[ERROR] the portal does not list {station!r}.\n"
-             f"        It lists {len(codes)} TU stations, bare codes with no "
-             f"network prefix.\n"
+             f"        It lists {len(codes)} stations across "
+             f"{', '.join(client.netcodes)}, bare codes with no network "
+             f"prefix.\n"
              f"        Closest by prefix: {', '.join(near) or '(none)'}\n"
              f"        Pass --no-verify to plan it anyway.")
 

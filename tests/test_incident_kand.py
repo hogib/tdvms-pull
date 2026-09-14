@@ -148,11 +148,19 @@ def test_a_network_qualified_code_is_reduced_to_the_bare_one():
 
 
 class FakeCodes:
-    def __init__(self, *codes):
+    def __init__(self, *codes, networks=None):
         self.codes = list(codes)
+        self.netcodes = ["TU", "KO", "TB"]
+        self.networks = networks or {}
 
     def station_codes(self):
         return self.codes
+
+    def station_network(self, code):
+        return self.networks.get(code, "TU")
+
+    def device_code(self, code):
+        return "H"
 
 
 def test_an_unlistable_station_is_refused_at_plan_time():
@@ -169,6 +177,21 @@ def test_the_refusal_names_near_matches():
 
 def test_a_listed_station_passes():
     verify("KAND", FakeCodes("KAND", "ELBA"))
+
+
+def test_a_station_outside_TU_is_planned_and_announced(capsys):
+    """The portal serves KO and TB as well, and 3/4 of it used to be invisible.
+
+    CTKS sits 11.9 km from ELBA -- the shortest pair this campaign could form
+    -- and could not be requested at all while the network was hardcoded.
+    """
+    verify("CTKS", FakeCodes("CTKS", "ELBA", networks={"CTKS": "KO"}))
+    assert "network KO" in capsys.readouterr().out
+
+
+def test_a_plain_TU_station_is_announced_silently(capsys):
+    verify("ELBA", FakeCodes("ELBA", networks={"ELBA": "TU"}))
+    assert capsys.readouterr().out == ""
 
 
 def test_an_unreachable_portal_does_not_block_planning(capsys):

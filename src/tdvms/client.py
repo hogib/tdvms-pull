@@ -22,6 +22,23 @@ import requests
 STATIONS_URL = "https://tdvms.afad.gov.tr/api/Data/GetStations"
 REQUEST_URL = "https://tdvmservis.afad.gov.tr/GetData"
 
+# Networks to look in. This was ["TU"] everywhere -- the station list, the
+# device lookup and the submission payload -- so three quarters of what the
+# portal serves was invisible: 1,537 stations exist across TU, KO, TB and TK,
+# and 390 were reachable. CTKS, 11.9 km from ELBA and the shortest possible
+# pair in this campaign's network, is one of the ones that could not be asked
+# for.
+#
+# TK is excluded by default. Its 879 stations are strong-motion
+# accelerometers, a different instrument class from the broadbands this
+# campaign is built on, and mixing sensor types across a station pair is a
+# mistake this project has already made once.
+DEFAULT_NETCODES = ("TU", "KO", "TB")
+
+# On the three codes that exist in two networks -- ALT, KULU, MADM -- prefer
+# this one, so a bare code keeps resolving the way it always did.
+PREFERRED_NETWORK = "TU"
+
 # The portal's own result codes, from the web client it ships.
 RESULT_OK, RESULT_QUEUED, RESULT_ERROR, RESULT_BUSY = 0, 109, 110, 111
 
@@ -79,53 +96,73 @@ class Rejected(Outcome):
 class Client:
     """Talks to the portal. Every method returns an `Outcome`, never raises."""
 
-    def __init__(self, timeout=180, session=None):
+    def __init__(self, timeout=180, session=None, netcodes=DEFAULT_NETCODES):
         self.timeout = timeout
         self.session = session or requests.Session()
-        self._devices = {}
-        self._codes = None
+        self.netcodes = list(netcodes)
+        self._stations = None
+
+    def _load(self):
+        """The portal's station table, once per process.
+
+        One round trip a process, not one a chunk: paying it per submission
+        made a full pool refill minutes of pure waiting.
+
+        Returns:
+            Dict of bare code to the portal's record. Where a code exists in
+            two networks the preferred one wins, so a bare code resolves as it
+            always did.
+        """
+        if self._stations is None:
+            r = self.session.post(STATIONS_URL,
+                                  json={"netcodes": self.netcodes,
+                                        "deviceCode": "", "component": ""},
+                                  timeout=30)
+            r.raise_for_status()
+            out = {}
+            for s in r.json():
+                code = s["code"]
+                if code in out and out[code].get("network") == PREFERRED_NETWORK:
+                    continue
+                out[code] = s
+            self._stations = out
+        return self._stations
 
     def station_codes(self):
-        """Every station code the portal lists, for validating a plan.
+        """Every station code the portal lists, for validating a plan."""
+        return list(self._load())
 
-        Cached with the device codes and for the same reason: one round trip a
-        process, not one a chunk.
+    def station_network(self, station):
+        """The network a bare code resolves to.
+
+        Raises:
+            LookupError: The portal does not list it.
         """
-        if self._codes is None:
-            r = self.session.post(STATIONS_URL,
-                                  json={"netcodes": ["TU"], "deviceCode": "",
-                                        "component": ""}, timeout=30)
-            r.raise_for_status()
-            self._codes = [s["code"] for s in r.json()]
-        return self._codes
+        rec = self._load().get(station)
+        if rec is None:
+            raise LookupError(f"{station}: not in the TDVMS station list")
+        return rec.get("network", PREFERRED_NETWORK)
 
     def device_code(self, station):
         """The instrument code the portal will accept for this station.
 
-        Cached for the life of the process: the station list is a 30-second
-        round trip and does not change during a campaign, and paying it once
-        per submission made a full pool refill take minutes of pure waiting.
+        Raises:
+            LookupError: Not listed, or listed with no usable instrument.
         """
-        if station in self._devices:
-            return self._devices[station]
-        r = self.session.post(STATIONS_URL,
-                              json={"netcodes": ["TU"], "deviceCode": "", "component": ""},
-                              timeout=30)
-        r.raise_for_status()
-        for s in r.json():
-            if s["code"] == station:
-                for flag, code in (("deviceH", "H"), ("deviceL", "L"), ("deviceN", "N")):
-                    if s.get(flag):
-                        self._devices[station] = code
-                        return code
-                raise LookupError(f"{station}: listed but carries no H/L/N device")
-        raise LookupError(f"{station}: not in the TDVMS station list")
+        rec = self._load().get(station)
+        if rec is None:
+            raise LookupError(f"{station}: not in the TDVMS station list")
+        for flag, code in (("deviceH", "H"), ("deviceL", "L"), ("deviceN", "N")):
+            if rec.get(flag):
+                return code
+        raise LookupError(f"{station}: listed but carries no H/L/N device")
 
     def submit(self, station, start, end, email):
         """Requests one window for one address.
 
         Args:
-            station: Bare code, e.g. "ELBA". The network is always TU here.
+            station: Bare code, e.g. "ELBA". Its network is resolved from the
+                portal's own listing rather than assumed.
             start, end: `datetime`, the window bounds.
             email: The plus-address whose slot this consumes.
 
@@ -135,6 +172,7 @@ class Client:
         """
         try:
             device = self.device_code(station)
+            network = self.station_network(station)
         except LookupError as e:
             return Rejected(str(e), permanent=True)
         except requests.exceptions.RequestException as e:
@@ -144,7 +182,7 @@ class Client:
             "start_time": start.strftime("%Y-%m-%d %H:%M:%S"),
             "end_time": end.strftime("%Y-%m-%d %H:%M:%S"),
             "data_type": "mseed", "instrument": False,
-            "networks": ["TU"], "stations": [station], "location": [None],
+            "networks": [network], "stations": [station], "location": [None],
             "device_codes": [device], "components": [["Z", "N", "E"]],
             "e_mail": email,
         }
