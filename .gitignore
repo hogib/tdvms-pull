@@ -7,3 +7,4 @@ tdvms_ledger.jsonl
 *.jsonl.lock
 *.jsonl.tmp
 afad_raw/
+.env.gcam
