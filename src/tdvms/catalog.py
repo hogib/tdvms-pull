@@ -85,14 +85,14 @@ def distance_km(lat1, lon1, lat2, lon2):
 
 
 def load_stations(path=STATIONS):
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8") as fh:
         return [Station(r["code"], r["network"], float(r["latitude"]),
                         float(r["longitude"]), r["devices"])
                 for r in csv.DictReader(fh)]
 
 
 def load_events(path=EVENTS):
-    with open(path, newline="") as fh:
+    with open(path, newline="", encoding="utf-8") as fh:
         return [Event(r["id"], r["time"], float(r["magnitude"]), float(r["latitude"]),
                       float(r["longitude"]), float(r["depth_km"]), r["place"])
                 for r in csv.DictReader(fh)]
@@ -155,7 +155,7 @@ def _write(path, header, rows):
     w.writerow(header)
     w.writerows(rows)
     tmp = pathlib.Path(path).with_suffix(".tmp")
-    tmp.write_text(buf.getvalue())
+    tmp.write_text(buf.getvalue(), encoding="utf-8", newline="")
     compat.replace(tmp, path)
 
 

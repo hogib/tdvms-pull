@@ -93,7 +93,7 @@ def holder(address, root=None):
     path = lock_path(address, root)
     if not path.exists():
         return None
-    with open(path) as fh:
+    with open(path, encoding="utf-8") as fh:
         if compat.held(fh):
             return describe(fh.read())
     return None
@@ -105,7 +105,7 @@ def holders(root=None):
     out = []
     for path in sorted(base.glob("*.lock")) if base.is_dir() else []:
         try:
-            with open(path) as fh:
+            with open(path, encoding="utf-8") as fh:
                 if not compat.held(fh):
                     continue
                 info = json.loads(fh.read())
@@ -139,7 +139,7 @@ def hold(address, ledger_path, root=None, **info):
     """
     path = lock_path(address, root)
     path.parent.mkdir(parents=True, exist_ok=True)
-    fh = open(path, "a+")
+    fh = open(path, "a+", encoding="utf-8")
     try:
         compat.lock(fh, block=False)
     except BlockingIOError:

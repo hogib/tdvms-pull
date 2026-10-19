@@ -36,7 +36,7 @@ def read_file(p=None, keys=VARS):
     if not p.exists():
         return {}
     out = {}
-    for line in p.read_text().splitlines():
+    for line in p.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -63,7 +63,7 @@ def write_file(values, p=None, keys=VARS, what="mailbox credentials"):
     body += [f"{k}={shlex.quote(values.get(k) or '')}" for k in keys]
     tmp = p.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w") as fh:
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
         fh.write("\n".join(body) + "\n")
     compat.replace(tmp, p)
     if compat.WINDOWS:

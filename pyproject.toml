@@ -54,3 +54,7 @@ testpaths = ["tests"]
 # a request nobody made, a station that answers nothing for a month, a reset
 # that lands on the wrong station. None of them raise.
 addopts = "-ra --strict-markers"
+# With PYTHONWARNDEFAULTENCODING=1 (CI sets it), a text file opened without an
+# encoding is a failure in tdvms's own code: Windows would read it as cp1252,
+# which is how the shipped catalogs crashed the Plan tab there.
+filterwarnings = ["error::EncodingWarning:tdvms(\\..*)?"]

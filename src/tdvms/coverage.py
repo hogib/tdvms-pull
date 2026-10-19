@@ -280,7 +280,7 @@ def report(ledger, raw, stations=None, refresh=False, progress=None):
     rows = [r for r in ledger.rows() if not stations or r["station"] in stations]
     cache_path = raw / CACHE
     try:
-        cache = {} if refresh else json.loads(cache_path.read_text())
+        cache = {} if refresh else json.loads(cache_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         cache = {}
     fetched = [(r, archive_path(raw, r)) for r in rows if r["state"] == "fetched"]
@@ -307,7 +307,7 @@ def report(ledger, raw, stations=None, refresh=False, progress=None):
         progress(len(fetched), len(fetched), "")
     if raw.is_dir():
         tmp = cache_path.with_suffix(".tmp")
-        tmp.write_text(json.dumps(cache))
+        tmp.write_text(json.dumps(cache), encoding="utf-8")
         compat.replace(tmp, cache_path)
 
     out = []

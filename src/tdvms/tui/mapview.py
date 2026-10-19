@@ -27,7 +27,7 @@ RADIUS_STYLE = "#ff6b6b"
 
 
 def load_outline():
-    return json.loads((DATA / "outline.json").read_text())["lines"]
+    return json.loads((DATA / "outline.json").read_text(encoding="utf-8"))["lines"]
 
 
 class StationMap(Widget, can_focus=True):

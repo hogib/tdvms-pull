@@ -92,7 +92,7 @@ class Ledger:
         """Every chunk, in file order, as plain dicts."""
         if not self.path.exists():
             return []
-        return [json.loads(l) for l in self.path.read_text().splitlines() if l.strip()]
+        return [json.loads(l) for l in self.path.read_text(encoding="utf-8").splitlines() if l.strip()]
 
     def _write(self, rows):
         """Atomic replace: a crash mid-write must not truncate the campaign.
@@ -102,7 +102,7 @@ class Ledger:
         unreadable because of one interrupted `save`.
         """
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
-        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
+        tmp.write_text("".join(json.dumps(r) + "\n" for r in rows), encoding="utf-8")
         compat.replace(tmp, self.path)
 
     @contextlib.contextmanager
@@ -116,7 +116,7 @@ class Ledger:
         lock = self.path.with_suffix(self.path.suffix + ".lock")
         # "a", not "w": truncating a file another process holds a lock in is
         # refused on Windows.
-        with open(lock, "a") as fh:
+        with open(lock, "a", encoding="utf-8") as fh:
             compat.lock(fh)
             try:
                 yield

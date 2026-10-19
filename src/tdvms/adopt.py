@@ -72,7 +72,7 @@ def run(args):
     if ledger.rows() and not args.force:
         sys.exit(f"[ERROR] {ledger.path} already holds {len(ledger.rows())} chunk(s). "
                  f"Adopting would replace them; pass --force if that is intended.")
-    old = [json.loads(l) for l in src.read_text().splitlines() if l.strip()]
+    old = [json.loads(l) for l in src.read_text(encoding="utf-8").splitlines() if l.strip()]
     rows, repairs = convert(old)
     with ledger.locked():
         ledger._write(rows)

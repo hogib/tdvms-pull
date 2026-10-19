@@ -24,3 +24,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: uv sync --extra tui --locked
       - run: uv run pytest
+        env:
+          # Every OS: a text file opened without an encoding fails the suite
+          # (see filterwarnings in pyproject.toml), not just on Windows.
+          PYTHONWARNDEFAULTENCODING: "1"
