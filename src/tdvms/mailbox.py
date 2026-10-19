@@ -18,8 +18,9 @@ import email
 import email.header
 import email.utils
 import imaplib
-import os
 import re
+
+from tdvms import credentials
 
 LINK_RE = re.compile(r'https?://tdvms\.afad\.gov\.tr/[^\s"\'<>\\]+\.zip')
 # The portal's third way of saying "nothing here": a mail with no link at all.
@@ -131,29 +132,27 @@ def classify(uid, msg, known_addresses, claim_unknown=False):
 
 
 class Mailbox:
-    """An IMAP mailbox. Credentials come from the environment only."""
+    """An IMAP mailbox. Credentials as `credentials.resolve` finds them."""
 
     def __init__(self, folder="INBOX", search="(UNSEEN)"):
         self.folder, self.search = folder, search
 
     @staticmethod
     def _credentials():
-        env = {n: os.environ.get(n) for n in
-               ("TDVMS_IMAP_HOST", "TDVMS_IMAP_USER", "TDVMS_IMAP_PASS")}
-        # The campaign this replaces used AFAD_IMAP_*; accept both so a live
-        # environment does not have to be re-exported mid-campaign.
-        for new, old in (("TDVMS_IMAP_HOST", "AFAD_IMAP_HOST"),
-                         ("TDVMS_IMAP_USER", "AFAD_IMAP_USER"),
-                         ("TDVMS_IMAP_PASS", "AFAD_IMAP_PASS")):
-            env[new] = env[new] or os.environ.get(old)
-        missing = [n for n, v in env.items() if not v]
+        # The environment first -- TDVMS_IMAP_*, then the older AFAD_IMAP_* so a
+        # live environment does not have to be re-exported mid-campaign -- and
+        # the file `tdvms-tui` saves for anything the environment leaves unset.
+        got = credentials.resolve()
+        missing = [n for n, (v, _) in got.items() if not v]
         if missing:
             raise SystemExit(
-                f"missing environment: {', '.join(missing)}\n"
+                f"missing mailbox credentials: {', '.join(missing)}\n"
+                f"  enter them in `tdvms-tui` (Mailbox, F3), which saves "
+                f"{credentials.path()}, or\n"
                 f"  export TDVMS_IMAP_HOST=imap.gmail.com\n"
                 f"  export TDVMS_IMAP_USER=you@gmail.com\n"
                 f"  export TDVMS_IMAP_PASS='<app password, not the account password>'")
-        return env["TDVMS_IMAP_HOST"], env["TDVMS_IMAP_USER"], env["TDVMS_IMAP_PASS"]
+        return tuple(got[n][0] for n in credentials.VARS)
 
     def read(self, known_addresses, claim_unknown=False):
         """One pass. Returns `(events, connection)`; the caller consumes.
