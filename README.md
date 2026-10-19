@@ -1,5 +1,7 @@
 # tdvms
 
+[![tests](https://github.com/hogib/tdvms-pull/actions/workflows/tests.yml/badge.svg)](https://github.com/hogib/tdvms-pull/actions/workflows/tests.yml)
+
 **Bulk-download seismic waveform data from AFAD's TDVMS portal: unattended,
 resumable, and safe to leave running for days.**
 
@@ -62,8 +64,8 @@ left off.
 ## Install
 
 ```bash
-git clone <repository-url> tdvms
-cd tdvms
+git clone https://github.com/hogib/tdvms-pull.git
+cd tdvms-pull
 uv sync --extra tui
 ```
 
