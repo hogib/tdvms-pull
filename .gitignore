@@ -4,7 +4,13 @@ __pycache__/
 # The campaign's state and its downloads. The ledger is per-operator and the
 # archives are tens of gigabytes; neither belongs in the repo.
 tdvms_ledger.jsonl
+*_ledger.jsonl
 *.jsonl.lock
 *.jsonl.tmp
-afad_raw/
+*_raw
+campaigns/
 .env.gcam
+# Run output and the operator's own campaign scripts.
+*.log
+nohup.out
+queue_campaigns.sh
