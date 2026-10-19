@@ -17,6 +17,13 @@ dependencies = [
 
 [project.scripts]
 tdvms = "tdvms.cli:main"
+tdvms-tui = "tdvms.tui:main"
+
+[project.optional-dependencies]
+# The TUI only. Optional for the reason above: `run` must never depend on it.
+tui = [
+    "textual>=8.2.8",
+]
 
 [dependency-groups]
 dev = ["pytest>=8.0"]
