@@ -1,7 +1,7 @@
 [project]
 name = "tdvms"
 version = "0.1.0"
-description = "A self-supervising AFAD/TDVMS download campaign: submit, fetch and free the slot in one process"
+description = "Bulk-download seismic waveform data from AFAD's TDVMS portal: unattended, resumable, with a terminal UI"
 readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
@@ -9,6 +9,16 @@ authors = [
     { name = "Oguzb", email = "hoguzbolat@gmail.com" }
 ]
 requires-python = ">=3.12"
+keywords = ["seismology", "afad", "tdvms", "miniseed", "earthquake", "waveform"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: Science/Research",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Physics",
+]
 # `requests` talks to the portal and downloads the archives. Everything else --
 # the ledger, the lock, the mailbox -- is standard library on purpose: this runs
 # unattended for days on a box whose other job is a 31 GB feature extraction,
@@ -16,6 +26,10 @@ requires-python = ">=3.12"
 dependencies = [
     "requests>=2.32",
 ]
+
+[project.urls]
+Homepage = "https://github.com/hogib/tdvms-pull"
+Issues = "https://github.com/hogib/tdvms-pull/issues"
 
 [project.scripts]
 tdvms = "tdvms.cli:main"
