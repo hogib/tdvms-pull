@@ -100,6 +100,12 @@ class Unmatched(Result):
         self.path = path
 
 
+class DiskFull(Result):
+    """The disk filled during the download. The partial file is already gone,
+    and the mail stays unread so the link is fetched once there is room."""
+    frees_slot = False
+
+
 class AlreadyBanked(Result):
     """This URL is already recorded as fetched -- an old mail resurfacing.
 
@@ -142,9 +148,16 @@ def download(url, out_dir, session=None, timeout=120):
         if "html" in ctype.lower():
             return None, Expired(
                 f"link returned {ctype}, not an archive — it has expired")
-        with open(path, "wb") as fh:
-            for block in resp.iter_content(1 << 16):
-                fh.write(block)
+        # A half-written archive is worse than none: it holds the disk space
+        # that ran out, and nothing will ever finish it. Whatever stops the
+        # transfer -- a full disk, a dropped connection, Ctrl-C -- it goes.
+        try:
+            with open(path, "wb") as fh:
+                for block in resp.iter_content(1 << 16):
+                    fh.write(block)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
     return path, None
 
 

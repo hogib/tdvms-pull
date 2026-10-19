@@ -20,7 +20,10 @@ written so that a crash anywhere leaves work the next cycle can pick up.
    about to hand out.
 4. `submit` last, once the free list is as long as it is going to get.
 """
+import errno
+
 from tdvms import client as portal
+from tdvms import disk
 from tdvms import fetch as fetching
 from tdvms import mailbox as mail
 from tdvms.ledger import IN_FLIGHT, age_seconds, chunk_id, now
@@ -31,8 +34,12 @@ class Config:
 
     def __init__(self, out_dir="afad_raw", claim_timeout=600, submit_timeout=21600,
                  max_attempts=3, nodata_streak=8, busy_cooldown=1800,
-                 retire=True, stations=None, claim_unknown=False, dry_run=False):
+                 retire=True, stations=None, claim_unknown=False, dry_run=False,
+                 min_free_gb=None):
         self.out_dir = out_dir
+        # Free space to keep under `out_dir`; None is twice the largest archive.
+        # See `disk`.
+        self.min_free_gb = min_free_gb
         # 10 minutes: a submission that has not been answered in that long did
         # not die politely. The portal's own slow path is the ~60 s cutoff.
         self.claim_timeout = claim_timeout
@@ -56,6 +63,8 @@ class Cycle:
         self.fetched, self.nodata, self.requeued = [], [], []
         self.reclaimed, self.retired, self.submitted = [], [], []
         self.busy, self.rejected, self.foreign, self.notes = [], [], [], []
+        self.paused = None        # why nothing was downloaded or submitted
+        self.mail_error = None    # why the inbox could not be read
 
     @property
     def quiet(self):
@@ -90,6 +99,7 @@ def cycle(ledger, pool, cfg, mailbox=None, tdvms=None, log=print):
     """
     out = Cycle()
     pool.refresh(ledger)
+    out.paused = disk.check(cfg.out_dir, ledger.rows(), cfg.min_free_gb)
     if mailbox is not None:
         _reap(ledger, pool, cfg, mailbox, out, log)
         pool.refresh(ledger)
@@ -97,7 +107,9 @@ def cycle(ledger, pool, cfg, mailbox=None, tdvms=None, log=print):
     if cfg.retire:
         _retire(ledger, cfg, out, log)
     pool.refresh(ledger)
-    if tdvms is not None:
+    # A submission is a download promised for later; with no room for it, the
+    # slot is better left free than filled with a link that cannot be kept.
+    if tdvms is not None and not out.paused:
         _submit(ledger, pool, cfg, tdvms, out, log)
     return out
 
@@ -113,6 +125,7 @@ def _reap(ledger, pool, cfg, mailbox, out, log):
         # Failing the cycle over it would stop submissions too, which is the
         # opposite of what a transient mail problem calls for.
         out.notes.append(f"mailbox unreadable this pass ({type(e).__name__}: {e})")
+        out.mail_error = f"{type(e).__name__}: {e}"
         log(f"  mailbox: {type(e).__name__}: {e} — retrying next cycle")
         return
     try:
@@ -122,14 +135,16 @@ def _reap(ledger, pool, cfg, mailbox, out, log):
                 continue          # left unread, on purpose; see mailbox.Foreign
             if isinstance(event, mail.Unreadable):
                 continue
+            if isinstance(event, mail.Link) and out.paused:
+                continue          # no room to download it; left unread until there is
             if isinstance(event, mail.NoData):
                 ok = _handle_nodata(ledger, pool, event, out, log)
             elif isinstance(event, mail.Link):
                 ok = _handle_links(ledger, pool, cfg, event, out, log)
             else:
                 ok = True         # portal mail we have no use for; consume it
-            if cfg.dry_run:
-                continue
+            if cfg.dry_run or ok is None:
+                continue          # None: the disk filled mid-pass; left unread
             try:
                 mailbox.consume(conn, event.uid, ok)
             except Exception as e:
@@ -181,7 +196,14 @@ def _handle_nodata(ledger, pool, event, out, log):
 
 
 def _handle_links(ledger, pool, cfg, event, out, log):
-    """Downloads each link, verifies it, and files it against its own window."""
+    """Downloads each link, verifies it, and files it against its own window.
+
+    Returns:
+        True or False for whether every link went cleanly -- or None when the
+        disk ran short partway, so the message stays unread and its remaining
+        links are fetched once there is room. Already-banked links are skipped
+        on that next pass, so nothing is fetched twice.
+    """
     clean = True
     for url in event.urls:
         if any(r.get("url") == url and r["state"] == "fetched" for r in ledger.rows()):
@@ -190,7 +212,13 @@ def _handle_links(ledger, pool, cfg, event, out, log):
         if cfg.dry_run:
             log(f"  DRY would fetch {url.rsplit('/', 1)[-1]} for {event.to}")
             continue
+        out.paused = disk.check(cfg.out_dir, ledger.rows(), cfg.min_free_gb)
+        if out.paused:
+            return None
         result = _ingest(ledger, pool, cfg, url, event.to, out, log)
+        if isinstance(result, fetching.DiskFull):
+            out.paused = result.detail
+            return None
         if not result.ok:
             clean = False
     return clean
@@ -200,6 +228,14 @@ def _ingest(ledger, pool, cfg, url, to, out, log):
     """One link, start to finish: download, inspect, match, record, free."""
     try:
         path, failure = fetching.download(url, cfg.out_dir)
+    except OSError as e:
+        if e.errno == errno.ENOSPC:
+            log(f"  [DISK] ran out of room downloading {url.rsplit('/', 1)[-1]}; "
+                f"the partial file is gone and the mail stays unread")
+            return fetching.DiskFull(f"the disk under {cfg.out_dir} filled during a "
+                                     f"download -- paused until there is room")
+        log(f"  [FAIL] {type(e).__name__}: {e}")
+        return fetching.Expired(str(e))
     except Exception as e:
         log(f"  [FAIL] {type(e).__name__}: {e}")
         return fetching.Expired(str(e))

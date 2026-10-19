@@ -136,6 +136,11 @@ class Ledger:
                      if r["state"] in IN_FLIGHT and (r.get("email") or "").lower() == e),
                     None)
 
+    def complete(self):
+        """Every chunk has an outcome. An empty ledger is not complete."""
+        rows = self.rows()
+        return bool(rows) and all(r["state"] in TERMINAL for r in rows)
+
     def stations(self):
         seen = []
         for r in self.rows():

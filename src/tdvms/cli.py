@@ -14,6 +14,7 @@ COMMANDS = {
     "plan":   ("tdvms.plan",   "enumerate a station's chunks into the ledger"),
     "adopt":  ("tdvms.adopt",  "import an afad_campaign ledger (source untouched)"),
     "run":    ("tdvms.run",    "the supervised loop: reap, reclaim, retire, submit"),
+    "queue":  ("tdvms.queue",  "run several campaigns one after another on one address"),
     "status": ("tdvms.report", "what the campaign has done, and what is stuck"),
     "reset":  ("tdvms.reset",  "requeue one chunk, by station and start"),
     "ingest": ("tdvms.ingest", "file an already-downloaded archive"),
@@ -24,7 +25,7 @@ def usage():
     print("tdvms -- an AFAD/TDVMS download campaign that supervises itself\n")
     print("usage: tdvms <command> [args...]     (each command has its own --help)\n")
     for name, (_, summary) in COMMANDS.items():
-        print(f"  {name:<7} {summary}")
+        print(f"  {name:<8} {summary}")
     print("\n`run` is the campaign. It owns the ledger, the mailbox and the portal")
     print("in one process, so submit -> fetch -> free-the-slot happen inside one")
     print("function under one lock. The other commands are for looking at it and")

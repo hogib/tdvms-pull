@@ -59,6 +59,14 @@ def lock_path(address, root=None):
     return root / "tdvms" / f"{address.strip().lower()}.lock"
 
 
+def relabel(fh, ledger_path):
+    """Rewrites what a held pool lock says it is working on -- `queue` moving on."""
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid {os.getpid()}, ledger {pathlib.Path(ledger_path).resolve()}\n")
+    fh.flush()
+
+
 def holder(address, root=None):
     """`"pid N, ledger PATH"` if a live process holds this pool, else None.
 
@@ -109,10 +117,7 @@ def hold(address, ledger_path, root=None):
         who = fh.read().strip()
         fh.close()
         raise PoolHeld(who or "another process") from None
-    fh.seek(0)
-    fh.truncate()
-    fh.write(f"pid {os.getpid()}, ledger {pathlib.Path(ledger_path).resolve()}\n")
-    fh.flush()
+    relabel(fh, ledger_path)
     return fh
 
 

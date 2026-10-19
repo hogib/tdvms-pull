@@ -27,8 +27,8 @@ def path():
     return pathlib.Path(root) / "tdvms" / "mailbox.env"
 
 
-def read_file(p=None):
-    """`KEY=value` lines into a dict. Unknown keys and comments are ignored."""
+def read_file(p=None, keys=VARS):
+    """`KEY=value` lines into a dict. Other keys and comments are ignored."""
     p = pathlib.Path(p or path())
     if not p.exists():
         return {}
@@ -39,14 +39,14 @@ def read_file(p=None):
             continue
         line = line.removeprefix("export ").strip()
         key, _, raw = line.partition("=")
-        if key in VARS:
+        if key in keys:
             parts = shlex.split(raw) if raw else [""]
             out[key] = parts[0] if parts else ""
     return out
 
 
-def write_file(values, p=None):
-    """Saves the three variables, readable by the owner only. Returns the path.
+def write_file(values, p=None, keys=VARS, what="mailbox credentials"):
+    """Saves `keys` from `values`, readable by the owner only. Returns the path.
 
     Created 0600 from the first byte rather than chmod-ed after, so the password
     is never on disk with wider permissions, even for an instant.
@@ -54,9 +54,9 @@ def write_file(values, p=None):
     p = pathlib.Path(p or path())
     p.parent.mkdir(parents=True, exist_ok=True)
     os.chmod(p.parent, 0o700)
-    body = ["# tdvms mailbox credentials -- written by tdvms-tui.",
+    body = [f"# tdvms {what} -- written by tdvms-tui.",
             "# Environment variables of the same name take precedence."]
-    body += [f"{k}={shlex.quote(values.get(k) or '')}" for k in VARS]
+    body += [f"{k}={shlex.quote(values.get(k) or '')}" for k in keys]
     tmp = p.with_suffix(".tmp")
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
