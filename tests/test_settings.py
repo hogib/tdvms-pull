@@ -105,6 +105,7 @@ def test_log_sends_everything_to_the_file(monkeypatch, tmp_path):
     where = run.log_to(tmp_path / "logs" / "run.log")
     print("[12:00:00] fetched 1 → silivri_raw")
     sys.stdout.flush()
+    sys.stdout.close()          # Windows will not delete a file still open
     assert where == (tmp_path / "logs" / "run.log").resolve()
     assert "fetched 1 → silivri_raw" in where.read_text(encoding="utf-8")
 

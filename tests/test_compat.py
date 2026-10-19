@@ -40,7 +40,8 @@ def test_a_lock_is_seen_by_another_handle_and_released(tmp_path):
         compat.lock(b, block=False)
     compat.unlock(a)
     assert not compat.held(b)
-    a.close(), b.close()
+    a.close()
+    b.close()
 
 
 class FakeMsvcrt(types.ModuleType):
@@ -82,6 +83,8 @@ def test_on_windows_the_lock_sits_past_the_text_so_the_holder_stays_readable(tmp
     assert compat.held(b) and b.read() == '{"pid": 1}\n'
     compat.unlock(a)
     assert not compat.held(b)
+    a.close()
+    b.close()
 
 
 def test_on_windows_locking_leaves_the_file_where_it_was(tmp_path, windows):
@@ -90,6 +93,8 @@ def test_on_windows_locking_leaves_the_file_where_it_was(tmp_path, windows):
     before = a.tell()
     compat.lock(a, block=False)
     assert a.tell() == before
+    compat.unlock(a)
+    a.close()
 
 
 def test_on_windows_a_held_lock_refuses_without_blocking(tmp_path, windows):
@@ -97,6 +102,9 @@ def test_on_windows_a_held_lock_refuses_without_blocking(tmp_path, windows):
     compat.lock(a)
     with pytest.raises(BlockingIOError):
         compat.lock(b, block=False)
+    compat.unlock(a)
+    a.close()
+    b.close()
 
 
 # --- output -------------------------------------------------------------------------

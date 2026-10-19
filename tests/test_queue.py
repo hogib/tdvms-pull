@@ -111,7 +111,7 @@ def test_a_queue_works_its_campaigns_in_order_and_skips_finished_ones(tmp_path, 
     assert _queue(monkeypatch, tmp_path, "old", "first", "second", portal=portal) == 0
     assert [c[0] for c in portal.calls] == ["AAAA", "BBBB"]
     lock = tmp_path / "state" / "tdvms" / "you@gmail.com.lock"
-    assert str(last.resolve()) in lock.read_text()        # says what it is on
+    assert json.loads(lock.read_text())["ledger"] == str(last.resolve())   # what it is on
 
 
 def test_each_queued_campaign_downloads_into_its_own_folder(tmp_path, monkeypatch):

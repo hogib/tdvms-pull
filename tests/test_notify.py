@@ -141,4 +141,4 @@ def test_a_notification_that_fails_is_logged_and_never_raised(monkeypatch):
     monkeypatch.setattr(notify.shutil, "which", lambda name: None)
     logged = []
     failed = notify.Notifier(["desktop"], log=logged.append).send("t", "b")
-    assert failed and "notify-send" in failed[0][1] and logged
+    assert failed and failed[0][0] == "desktop" and logged
