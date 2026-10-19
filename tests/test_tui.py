@@ -350,3 +350,56 @@ def test_the_mailbox_tab_saves_what_is_typed_and_shows_each_source(monkeypatch,
     assert credentials.read_file() == {"TDVMS_IMAP_HOST": "imap.example.org",
                                        "TDVMS_IMAP_USER": "you@gmail.com",
                                        "TDVMS_IMAP_PASS": tricky}
+
+# --- a running queue, and the coverage tab -------------------------------------
+
+def _campaign_dir(root, name, *rows):
+    home = root / "campaigns" / name
+    home.mkdir(parents=True)
+    write(home / "ledger.jsonl", list(rows))
+    return home / "ledger.jsonl"
+
+
+def test_the_tui_reads_a_queue_and_knows_which_campaign_it_is_on(tmp_path):
+    done = _campaign_dir(tmp_path, "old", chunk(state="fetched"))
+    now_on = _campaign_dir(tmp_path, "first", chunk())
+    later = _campaign_dir(tmp_path, "second", chunk())
+    proc = tmp_path / "proc"
+    (proc / "77" / "fd").mkdir(parents=True)
+    (proc / "77" / "cmdline").write_bytes(b"\0".join(
+        [b"/v/bin/python", b"/v/bin/tdvms", b"queue", b"--claim-unknown", b"old",
+         b"first", b"second", b"--address", b"you@gmail.com", b"--slots", b"4"]))
+    (proc / "77" / "cwd").symlink_to(tmp_path)
+    [r] = model.live_runs(proc)
+    assert (r.command, r.ledger, r.slots) == ("queue", now_on.resolve(), 4)
+    assert r.queue == (done.resolve(), now_on.resolve(), later.resolve())
+    second = next(c for c in model.discover(tmp_path) if c.name == "second")
+    assert model.queued_for(second, [r]) == (r, 1)
+    assert model.live_for(second, [r]) is None
+
+
+def test_a_flag_never_swallows_the_word_after_it():
+    opts, rest = model.parse(["--claim-unknown", "silivri", "--slots", "3", "van"])
+    assert rest == ["silivri", "van"] and opts == {"claim-unknown": "", "slots": "3"}
+
+
+def test_the_coverage_tab_shows_each_channel(tmp_path):
+    pytest.importorskip("textual")
+    from textual.widgets import DataTable
+
+    from tdvms.tui.app import TdvmsApp
+    from test_coverage import _campaign, stream
+    _campaign(tmp_path, stream(*range(0, 600)))
+
+    async def go():
+        app = TdvmsApp(tmp_path)
+        async with app.run_test(size=(180, 40)) as pilot:
+            app.query_one("#detail").active = "t-coverage"
+            for _ in range(30):
+                await pilot.pause(0.1)
+                if app.query_one("#coverage", DataTable).row_count:
+                    break
+            t = app.query_one("#coverage", DataTable)
+            return [str(c) for c in t.get_row_at(0)]
+    row = asyncio.run(go())
+    assert row[0] == "ELBA" and row[1] == "HHZ"

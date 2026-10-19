@@ -68,6 +68,7 @@ class StationMap(Widget, can_focus=True):
         self.stations = []          # what is drawn; filtering is the caller's
         self.selected = set()       # Station.key
         self.planned = set()        # bare codes already in the target ledger
+        self.flags = {}             # bare code -> history.Record.kind
         self.epicentre = None       # (lat, lon, radius_km)
         self.center = HOME
         self.cursor = HOME
@@ -226,7 +227,7 @@ class StationMap(Widget, can_focus=True):
         # under an unselected one sharing its cell.
         def rank(s):
             return (s.key in self.selected, s.code in self.planned,
-                    s.network not in STRONG_MOTION)
+                    s.network not in STRONG_MOTION, self.flags.get(s.code) != "dead")
         labels = []
         for s in sorted(self.stations, key=rank):
             cx, cy = self.to_cell(s.longitude, s.latitude)
@@ -240,6 +241,8 @@ class StationMap(Widget, can_focus=True):
                 cells[cy][cx], styles[cy][cx] = "◆", f"{colour}"
             elif not s.requestable:
                 cells[cy][cx], styles[cy][cx] = "×", "#666666"
+            elif self.flags.get(s.code) == "dead":
+                cells[cy][cx], styles[cy][cx] = "⊘", f"dim {colour}"
             else:
                 glyph = "·" if s.network in STRONG_MOTION else "•"
                 cells[cy][cx], styles[cy][cx] = glyph, colour

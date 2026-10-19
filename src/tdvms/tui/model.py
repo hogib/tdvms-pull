@@ -18,71 +18,14 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
 from tdvms import fetch as fetching
-from tdvms.ledger import IN_FLIGHT, TERMINAL, Ledger, chunk_id, now
+from tdvms.campaign import CAMPAIGNS, NAME_RE, Campaign, discover, new_campaign  # noqa: F401
+from tdvms.campaign import for_ledger as campaign_for
+from tdvms.ledger import IN_FLIGHT, TERMINAL, chunk_id, now
 from tdvms.plan import enumerate_chunks
 from tdvms.report import summarise
 from tdvms.slots import Pool
 
-# New campaigns get a folder each: `campaigns/<name>/ledger.jsonl` beside
-# `campaigns/<name>/raw`, and `run.log` if the operator sends the loop there.
-CAMPAIGNS = "campaigns"
-NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
 SLOT_RE = re.compile(r"^(?P<local>[^+@]+)\+a(?P<n>\d+)@(?P<domain>.+)$", re.I)
-
-
-@dataclass
-class Campaign:
-    name: str
-    ledger: Ledger
-    raw: pathlib.Path
-    log: pathlib.Path
-
-    @property
-    def path(self):
-        return self.ledger.path
-
-
-def discover(root="."):
-    """Every ledger under `root`: `campaigns/*/` first, then the flat layout.
-
-    The flat layout is `<name>_ledger.jsonl` beside `<name>_raw`, which is what
-    campaigns run by hand before the folder layout look like.
-    `tdvms_ledger.jsonl` is the CLI's default and downloads to `afad_raw`.
-    """
-    root = pathlib.Path(root)
-    found = []
-    for p in sorted((root / CAMPAIGNS).glob("*/ledger.jsonl")):
-        found.append(Campaign(p.parent.name, Ledger(p), p.parent / "raw",
-                              p.parent / "run.log"))
-    for p in sorted(root.glob("*_ledger.jsonl")):
-        name = p.name[:-len("_ledger.jsonl")]
-        raw = root / ("afad_raw" if name == "tdvms" else f"{name}_raw")
-        found.append(Campaign(name, Ledger(p), raw, root / f"{name}_run.log"))
-    return found
-
-
-def new_campaign(root, name, raw_target=None):
-    """Creates `campaigns/<name>/` and its `raw`, ready for `plan`.
-
-    `raw_target` puts the downloads elsewhere -- another disk, usually -- and
-    links `raw` to it, so the campaign folder still reads the same either way
-    and `--out-dir campaigns/<name>/raw` is always the right flag.
-    """
-    if not NAME_RE.match(name or ""):
-        raise ValueError("a campaign name is lowercase letters, digits, - and _")
-    if any(c.name == name for c in discover(root)):
-        raise ValueError(f"a campaign called {name!r} already exists")
-    home = pathlib.Path(root) / CAMPAIGNS / name
-    home.mkdir(parents=True, exist_ok=True)
-    raw = home / "raw"
-    if raw_target:
-        target = pathlib.Path(raw_target).expanduser().resolve()
-        target.mkdir(parents=True, exist_ok=True)
-        if not raw.exists():
-            raw.symlink_to(target, target_is_directory=True)
-    else:
-        raw.mkdir(exist_ok=True)
-    return Campaign(name, Ledger(home / "ledger.jsonl"), raw, home / "run.log")
 
 
 # --- live runs ----------------------------------------------------------------
@@ -90,16 +33,22 @@ def new_campaign(root, name, raw_target=None):
 @dataclass
 class LiveRun:
     pid: int
-    ledger: pathlib.Path      # resolved against the run's own cwd
+    ledger: pathlib.Path | None  # the campaign being worked; None once a queue is done
     address: str | None
     slots: int
     out_dir: str
-    log: pathlib.Path | None  # wherever its stdout actually goes
+    log: pathlib.Path | None     # wherever its stdout actually goes
     dry_run: bool
+    command: str = "run"         # or "queue"
+    queue: tuple = ()            # a queue's campaigns, in order, as ledger paths
 
 
-def run_args(argv):
-    """The arguments after `run`, if this argv is a tdvms run loop; else None.
+# Options that take no value, so the word after one is not swallowed as it.
+FLAGS = {"once", "dry-run", "claim-unknown", "no-retire", "exit-when-done"}
+
+
+def command_args(argv):
+    """`("run" | "queue", the arguments after it)` for a tdvms loop; else None.
 
     `uv run tdvms run ...` is a launcher whose child is the real loop, so the
     launcher itself is skipped -- otherwise every run would be counted twice.
@@ -107,30 +56,57 @@ def run_args(argv):
     if not argv or os.path.basename(argv[0]) in ("uv", "uvx"):
         return None
     for i, tok in enumerate(argv[:-1]):
-        if os.path.basename(tok) == "tdvms" and argv[i + 1] == "run":
-            return argv[i + 2:]
-        if tok == "-m" and argv[i + 1] == "tdvms.run":
-            return argv[i + 2:]
+        if os.path.basename(tok) == "tdvms" and argv[i + 1] in ("run", "queue"):
+            return argv[i + 1], argv[i + 2:]
+        if tok == "-m" and argv[i + 1] in ("tdvms.run", "tdvms.queue"):
+            return argv[i + 1].split(".")[1], argv[i + 2:]
     return None
 
 
-def options(args):
-    """`--key value` and `--key=value` into a dict. Bare flags map to ""."""
-    out, i = {}, 0
+def run_args(argv):
+    """The arguments after `run`, if this argv is a `tdvms run`; else None."""
+    got = command_args(argv)
+    return got[1] if got and got[0] == "run" else None
+
+
+def parse(args):
+    """`(options, positionals)`: `--key value` and `--key=value`, bare flags as ""."""
+    out, rest, i = {}, [], 0
     while i < len(args):
         a = args[i]
         if a.startswith("--"):
             key, eq, val = a[2:].partition("=")
-            if not eq and i + 1 < len(args) and not args[i + 1].startswith("--"):
+            if (not eq and key not in FLAGS and i + 1 < len(args)
+                    and not args[i + 1].startswith("--")):
                 val = args[i + 1]
                 i += 1
             out[key] = val
+        else:
+            rest.append(a)
         i += 1
+    return out, rest
+
+
+def options(args):
+    return parse(args)[0]
+
+
+def _queued(specs, cwd, root):
+    """A queue's campaigns, resolved as the queue itself resolved them."""
+    out = []
+    for spec in specs:
+        p = cwd / spec
+        if spec.endswith(".jsonl") or p.is_file():
+            out.append(campaign_for(p))
+            continue
+        found = next((c for c in discover(root) if c.name == spec), None)
+        if found:
+            out.append(found)
     return out
 
 
 def live_runs(proc="/proc"):
-    """Every `tdvms run` on this machine. Empty where there is no `/proc` (macOS)."""
+    """Every `tdvms run` and `tdvms queue` here. Empty with no `/proc` (macOS)."""
     runs = []
     if not pathlib.Path(proc).is_dir():
         return runs
@@ -142,10 +118,11 @@ def live_runs(proc="/proc"):
             cwd = pathlib.Path(os.readlink(d / "cwd"))
         except OSError:
             continue
-        args = run_args([a.decode(errors="replace") for a in raw.split(b"\0") if a])
-        if args is None:
+        got = command_args([a.decode(errors="replace") for a in raw.split(b"\0") if a])
+        if got is None:
             continue
-        o = options(args)
+        command, args = got
+        o, positional = parse(args)
         try:
             log = pathlib.Path(os.readlink(d / "fd" / "1"))
             log = log if log.is_absolute() and log.is_file() else None
@@ -155,16 +132,37 @@ def live_runs(proc="/proc"):
             slots = int(o.get("slots") or 8)
         except ValueError:
             slots = 8
-        runs.append(LiveRun(int(d.name),
-                            (cwd / (o.get("ledger") or "tdvms_ledger.jsonl")).resolve(),
-                            o.get("address") or None, slots,
-                            o.get("out-dir") or "afad_raw", log, "dry-run" in o))
+        if command == "queue":
+            camps = _queued(positional, cwd, cwd / (o.get("root") or "."))
+            # The queue works its campaigns in order and skips finished ones,
+            # so the one it is on is the first that is not complete.
+            now_on = next((c for c in camps if not c.ledger.complete()), None)
+            runs.append(LiveRun(int(d.name), now_on.path.resolve() if now_on else None,
+                                o.get("address") or None, slots,
+                                str(now_on.raw) if now_on else "", log, False, "queue",
+                                tuple(c.path.resolve() for c in camps)))
+            continue
+        ledger = (cwd / (o.get("ledger") or "tdvms_ledger.jsonl")).resolve()
+        runs.append(LiveRun(int(d.name), ledger, o.get("address") or None, slots,
+                            o.get("out-dir") or str(campaign_for(ledger).raw), log,
+                            "dry-run" in o))
     return runs
 
 
 def live_for(campaign, runs):
     path = campaign.path.resolve()
     return next((r for r in runs if r.ledger == path and not r.dry_run), None)
+
+
+def queued_for(campaign, runs):
+    """`(run, position)` if a live queue will get to this campaign later."""
+    path = campaign.path.resolve()
+    for r in runs:
+        if path in r.queue and r.ledger != path:
+            later = list(r.queue)
+            if r.ledger in later and later.index(path) > later.index(r.ledger):
+                return r, later.index(path) - later.index(r.ledger)
+    return None
 
 
 # --- what a campaign looks like -----------------------------------------------

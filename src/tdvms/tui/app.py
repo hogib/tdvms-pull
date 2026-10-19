@@ -4,6 +4,7 @@ Drawing only. What a screen shows and every change it makes comes from
 `tui.model`, so the app never touches a ledger except through it.
 """
 import argparse
+import os
 import pathlib
 from datetime import date
 from functools import partial
@@ -19,9 +20,9 @@ from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input,
                              TabPane)
 from textual.widgets.option_list import Option
 
-from tdvms import catalog, credentials
+from tdvms import catalog, coverage, credentials, disk, history, notify
 from tdvms import plan as planning
-from tdvms.ledger import IN_FLIGHT, TERMINAL, age_seconds, chunk_id
+from tdvms.ledger import IN_FLIGHT, age_seconds, chunk_id
 from tdvms.slots import holder
 from tdvms.tui import model
 from tdvms.tui.mapview import NETWORK_STYLE, StationMap
@@ -227,6 +228,7 @@ class CampaignsView(Vertical):
         self._log = (None, None)
         self._filing = set()
         self._strays = []
+        self._cov_running = False
 
     def compose(self):
         with Horizontal():
@@ -254,6 +256,9 @@ class CampaignsView(Vertical):
                         "across disks if needed); [b]d[/] deletes one whose window is already "
                         "fetched.", classes="hint")
                     yield DataTable(id="strays", cursor_type="row", zebra_stripes=True)
+                with TabPane("Coverage", id="t-coverage"):
+                    yield Static(id="cov-status", classes="hint")
+                    yield DataTable(id="coverage", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self):
         self.query_one("#ledgers").border_title = "Ledgers"
@@ -265,6 +270,10 @@ class CampaignsView(Vertical):
             t.add_column(name, key=name)
         t = self.query_one("#strays", DataTable)
         for name in ("file", "window", "belongs to", "state there", "size", "action"):
+            t.add_column(name, key=name)
+        t = self.query_one("#coverage", DataTable)
+        for name in ("station", "channel", "covered", "gaps ≥1 min", "largest gap",
+                     "requested period →"):
             t.add_column(name, key=name)
         self.tick()
         self.set_interval(2, self.tick)
@@ -281,7 +290,7 @@ class CampaignsView(Vertical):
     def _tab(self, event):
         # Focus the tab's table so its keys work, and show in the footer, at once.
         target = {"t-slots": "#slots", "t-chunks": "#chunks", "t-log": "#log",
-                  "t-strays": "#strays"}.get(event.pane.id)
+                  "t-strays": "#strays", "t-coverage": "#coverage"}.get(event.pane.id)
         if target:
             self.query_one(target).focus()
         self.refresh_bindings()
@@ -317,6 +326,8 @@ class CampaignsView(Vertical):
             self._chunks(c, rows, mtime)
         elif tab == "t-strays":
             self._strays_table()
+        elif tab == "t-coverage":
+            self._coverage(c, mtime)
         self._tail(c, run)
 
     def _ledger_list(self):
@@ -326,9 +337,15 @@ class CampaignsView(Vertical):
             rows = c.ledger.rows()
             done = model.progress(rows)
             live = model.live_for(c, self.runs)
+            queued = None if live else model.queued_for(c, self.runs)
             bar = "█" * round(done * 10) + "░" * (10 - round(done * 10))
             t = Text()
-            t.append("● " if live else "  ", style="bold #69db7c")
+            if live:
+                t.append("● ", style="bold #69db7c")
+            elif queued:
+                t.append("◌ ", style="#4ea8ff")
+            else:
+                t.append("  ")
             t.append(f"{c.name[:12]:<12} ")
             t.append(bar, style="#69db7c" if done >= 1 else "#4ea8ff")
             t.append(f" {done * 100:3.0f}%")
@@ -358,10 +375,15 @@ class CampaignsView(Vertical):
         t = Text()
         t.append(f"{c.name}", style="bold")
         t.append(f"   {c.path}\n", style="dim")
+        queued = None if run else model.queued_for(c, self.runs)
         if run:
             t.append("● live", style="bold #69db7c")
             t.append(f"  pid {run.pid} · {run.address} × {run.slots} slots · "
                      f"out-dir {run.out_dir}\n")
+            if run.command == "queue":
+                names = [p.parent.name if p.name == "ledger.jsonl"
+                         else p.name.removesuffix("_ledger.jsonl") for p in run.queue]
+                t.append(f"  queue: {' → '.join(names)}\n", style="dim")
             if run.address:
                 who = holder(run.address)
                 if who:
@@ -370,6 +392,10 @@ class CampaignsView(Vertical):
                     t.append("  pool lock not held — this run started before the lock "
                              "existed, so a second run on its address would not be "
                              "refused. Restart it when convenient.\n", style="#ffd43b")
+        elif queued:
+            q, ahead = queued
+            t.append("◌ queued", style="bold #4ea8ff")
+            t.append(f"  in pid {q.pid}'s queue, {ahead} campaign(s) from now\n")
         else:
             try:
                 age = fmt_age(age_seconds(_iso_mtime(c.path)))
@@ -377,6 +403,11 @@ class CampaignsView(Vertical):
                 age = "—"
             t.append("○ not running", style="dim")
             t.append(f"  · ledger last written {age} ago\n", style="dim")
+        free = disk.free_bytes(run.out_dir if run and run.out_dir else c.raw)
+        need = disk.reserve_bytes(rows)
+        t.append(f"  disk: {free / 1e9:,.0f} GB free for downloads; the loop pauses "
+                 f"below {need / 1e9:.1f} GB\n",
+                 style="bold #ff8787" if free < need else "dim")
         t.append("\n")
         for line in model.overview(c):
             style = None
@@ -476,6 +507,74 @@ class CampaignsView(Vertical):
         self._log = (path, offset)
         if text:
             log.write(text)
+
+    # --- coverage ----------------------------------------------------------
+
+    COV_STYLE = {"full": "#69db7c", "partial": "#ffd43b", "gap": "#ff8787",
+                 "nodata": "#a5525a", "pending": "#5c6370", "none": ""}
+
+    def _coverage(self, c, mtime):
+        sig = ("coverage", c.name, mtime)
+        if self._sig.get("coverage") == sig or self._cov_running:
+            return
+        self._sig["coverage"] = sig
+        self._cov_running = True
+        self.query_one("#cov-status", Static).update(
+            Text(f"reading the archives under {c.raw} …", style="dim"))
+        self.run_worker(partial(self._cov_work, c), thread=True)
+
+    def _cov_work(self, c):
+        def progress(done, total, name):
+            if done < total:
+                self.app.call_from_thread(
+                    self.query_one("#cov-status", Static).update,
+                    Text(f"reading {done + 1} of {total} new archive(s): {name}", style="dim"))
+        try:
+            stations, err = coverage.report(c.ledger, c.raw, progress=progress), None
+        except Exception as e:
+            stations, err = [], f"{type(e).__name__}: {e}"
+        self.app.call_from_thread(self._cov_show, c, stations, err)
+
+    def _cov_show(self, c, stations, err):
+        self._cov_running = False
+        if c.name != self.current:
+            self._sig.pop("coverage", None)
+            return
+        status = self.query_one("#cov-status", Static)
+        if err:
+            status.update(Text(f"coverage failed: {err}", style="#ff8787"))
+            return
+        legend = Text()
+        legend.append(f"{len(stations)} station(s).  ")
+        for ch, kind, what in (("█", "full", "data"), ("▄", "partial", "partial"),
+                               ("▁", "gap", "gap in an archive"),
+                               ("×", "nodata", "no data at source"),
+                               ("·", "pending", "not downloaded yet")):
+            legend.append(ch, style=self.COV_STYLE[kind])
+            legend.append(f" {what}  ")
+        status.update(legend)
+        t = self.query_one("#coverage", DataTable)
+        t.clear()
+        width = 48
+        for st in stations:
+            rows = st.channels or [None]
+            for i, ch in enumerate(rows):
+                line = Text()
+                for char, kind in coverage.timeline(st, ch, width):
+                    line.append(char, style=self.COV_STYLE[kind])
+                if ch is None:
+                    t.add_row(st.code, "—", "", "", "no archives yet", line,
+                              key=f"{st.code}")
+                    continue
+                gaps = [g for g in ch.gaps if g.seconds >= 60]
+                big = max(gaps, key=lambda g: g.seconds, default=None)
+                pct = ch.fraction * 100
+                t.add_row(st.code if i == 0 else "", ch.label,
+                          Text(f"{pct:5.1f}%", style="#69db7c" if pct >= 99 else
+                               "#ffd43b" if pct >= 75 else "#ff8787"),
+                          str(len(gaps)),
+                          f"{coverage.fmt_seconds(big.seconds)} ({big.why})" if big else "",
+                          line, key=ch.cid)
 
     # --- repairs -----------------------------------------------------------
 
@@ -589,6 +688,7 @@ class PlanView(Vertical):
         self.picked = {}          # Station.key -> Station
         self.ref = None           # (lat, lon) the km column measures from
         self.campaigns = []
+        self.history = {}         # bare code -> history.Record, from every ledger
 
     def compose(self):
         start, end, chunk = plan_defaults()
@@ -624,12 +724,13 @@ class PlanView(Vertical):
     def on_mount(self):
         t = self.query_one("#stations", DataTable)
         for label, key in (("", "pick"), ("code", "code"), ("net", "net"),
-                           ("lat", "lat"), ("lon", "lon"), ("dev", "dev"), ("km", "km")):
+                           ("lat", "lat"), ("lon", "lon"), ("dev", "dev"), ("km", "km"),
+                           ("past", "past")):
             t.add_column(label, key=key)
         self.query_one("#map").border_title = (
             " ".join(f"[{NETWORK_STYLE[n]}]{'·' if n in catalog.STRONG_MOTION else '●'}"
                      f"[/] {n}" for n in catalog.NETWORKS)
-            + "   ◉ picked  ◆ in ledger  [#ff6b6b]✱[/] epicentre")
+            + "   ◉ picked  ◆ in ledger  ⊘ never returned data  [#ff6b6b]✱[/] epicentre")
         self.refresh_targets()
         self._restation()
         self._preview()
@@ -667,12 +768,24 @@ class PlanView(Vertical):
             t.add_row("◉" if s.key in self.picked else "", s.code,
                       Text(s.network, style=NETWORK_STYLE.get(s.network, "")),
                       f"{s.latitude:.3f}", f"{s.longitude:.3f}", s.devices or "—",
-                      f"{dist[s.key]:.0f}" if s.key in dist else "", key=s.key)
+                      f"{dist[s.key]:.0f}" if s.key in dist else "", self._past(s.code),
+                      key=s.key)
         self.query_one("#side").border_title = (
             f"Stations — {len(rows)} shown, {len(self.picked)} picked")
 
+    def _past(self, code):
+        """`12✓ 3✗`: windows fetched and answered no-data across every ledger."""
+        rec = self.history.get(code)
+        if rec is None or not (rec.answered or rec.retired):
+            return ""
+        style = {"dead": "#ff8787", "patchy": "#ffd43b"}.get(rec.kind, "dim")
+        return Text(f"{rec.fetched}✓ {rec.nodata}✗", style=style)
+
     def refresh_targets(self):
         self.campaigns = model.discover(self.root)
+        self.history = history.gather(self.campaigns)
+        m = self.query_one("#map", StationMap)
+        m.flags = {code: rec.kind for code, rec in self.history.items() if rec.kind}
         sel = self.query_one("#target", Select)
         old = sel.value
         opts = [(c.name, c.name) for c in self.campaigns] + [("+ new campaign", NEW)]
@@ -889,6 +1002,10 @@ class PlanView(Vertical):
 
     def _warnings(self):
         out = []
+        for code in sorted({s.code for s in self.picked.values()}):
+            rec = self.history.get(code)
+            if rec and rec.warning():
+                out.append(rec.warning())
         tk = sorted(s.code for s in self.picked.values()
                     if s.network in catalog.STRONG_MOTION)
         if tk and len(tk) < len(self.picked):
@@ -1001,17 +1118,47 @@ class MailboxView(VerticalScroll):
             yield Button("Test connection", id="test")
             yield Button("Save", variant="primary", id="save")
         yield Static(id="cred-result")
+        yield Static(
+            "[b]Notifications[/]\n\n"
+            "Where `run` and `queue` say so when a campaign finishes or needs you: the "
+            "mailbox failing, the disk nearly full, every slot stuck on BUSY, nothing "
+            "back for hours. One or more, comma-separated: an ntfy topic URL — pick an "
+            "unguessable topic at [u]https://ntfy.sh[/u] and subscribe in its phone app — "
+            "any URL that accepts a POST, or [b]desktop[/].\n\n"
+            f"Saved to [b]{_home(notify.path())}[/]. TDVMS_NOTIFY in the environment, "
+            "or --notify on the command line, take precedence.", classes="intro section")
+        with Horizontal(classes="cred-row"):
+            yield Label("Send to", classes="cred-label")
+            yield Input(placeholder="https://ntfy.sh/your-topic, desktop", id="notify")
+        yield Static(id="notify-source", classes="cred-source")
+        with Horizontal(classes="cred-buttons"):
+            yield Button("Send a test", id="notify-test")
+            yield Button("Save", variant="primary", id="notify-save")
+        yield Static(id="notify-result")
 
     def on_mount(self):
         for var, (value, _) in credentials.resolve().items():
             self.query_one(f"#v-{var}", Input).value = value or ""
+        self.query_one("#notify", Input).value = ", ".join(notify.targets())
         self._sources()
 
     def _values(self):
         return {var: self.query_one(f"#v-{var}", Input).value.strip()
                 for var, *_ in self.FIELDS}
 
+    def _notify_source(self):
+        t = Text("TDVMS_NOTIFY: ", style="dim")
+        if os.environ.get(notify.ENV):
+            t.append("from the environment, which overrides what is saved here",
+                     style="#ffd43b")
+        elif notify.targets():
+            t.append(f"saved in {_home(notify.path())}", style="#69db7c")
+        else:
+            t.append("not set — no notifications", style="dim")
+        self.query_one("#notify-source", Static).update(t)
+
     def _sources(self):
+        self._notify_source()
         typed = self._values()
         for var, (value, source) in credentials.resolve().items():
             t = Text(f"{var}: ", style="dim")
@@ -1035,6 +1182,9 @@ class MailboxView(VerticalScroll):
         self._sources()
 
     def on_button_pressed(self, event):
+        if event.button.id in ("notify-test", "notify-save"):
+            self._notify_button(event)
+            return
         values = self._values()
         missing = [label for var, label, *_ in self.FIELDS if not values[var]]
         if missing:
@@ -1049,6 +1199,37 @@ class MailboxView(VerticalScroll):
             event.button.disabled = True
             result.update(Text(f"connecting to {values['TDVMS_IMAP_HOST']} …", style="dim"))
             self.run_worker(partial(self._test, values), thread=True)
+
+    def _notify_button(self, event):
+        value = self.query_one("#notify", Input).value.strip()
+        result = self.query_one("#notify-result", Static)
+        if event.button.id == "notify-save":
+            where = notify.save(value)
+            self._notify_source()
+            self.notify(f"saved to {where}" if value else "notifications turned off")
+            return
+        targets = notify.split(value)
+        if not targets:
+            self.notify("enter at least one target", severity="error")
+            return
+        event.button.disabled = True
+        result.update(Text("sending …", style="dim"))
+        self.run_worker(partial(self._notify_test, targets), thread=True)
+
+    def _notify_test(self, targets):
+        failed = notify.Notifier(targets, log=lambda m: None).send(
+            "tdvms: test notification", "If you can read this, notifications work.")
+        ok = [t for t in targets if t not in {f for f, _ in failed}]
+        msg = Text()
+        if ok:
+            msg.append(f"✓ sent to {', '.join(ok)}\n", style="#69db7c")
+        for t, err in failed:
+            msg.append(f"✗ {t}: {err}\n", style="#ff8787")
+        self.app.call_from_thread(self._notify_tested, msg)
+
+    def _notify_tested(self, msg):
+        self.query_one("#notify-test", Button).disabled = False
+        self.query_one("#notify-result", Static).update(msg)
 
     def _test(self, values):
         try:
@@ -1071,7 +1252,7 @@ class TdvmsApp(App):
     BINDINGS = [
         Binding("f1", "show('campaigns')", "Campaigns"),
         Binding("f2", "show('plan')", "Plan"),
-        Binding("f3", "show('mailbox')", "Mailbox"),
+        Binding("f3", "show('mailbox')", "Settings"),
         Binding("q", "quit", "Quit"),
     ]
     CSS = """
@@ -1086,7 +1267,7 @@ class TdvmsApp(App):
     #map { border: round $panel; }
     #map:focus { border: round $accent; }
     #map-status { height: 1; padding: 0 1; }
-    #side { width: 58; border: round $panel; }
+    #side { width: 66; border: round $panel; }
     #side-opts { height: auto; }
     #side-opts Checkbox { width: auto; }
     .form-row { height: auto; align-vertical: middle; }
@@ -1118,7 +1299,8 @@ class TdvmsApp(App):
     #show-pass { margin-left: 15; }
     .cred-buttons { height: auto; padding: 1 0 1 16; }
     .cred-buttons Button { margin-right: 1; }
-    #cred-result { padding-left: 16; }
+    #cred-result, #notify-result { padding-left: 16; }
+    .section { padding-top: 2; }
     """
 
     def __init__(self, root):
@@ -1132,7 +1314,7 @@ class TdvmsApp(App):
                 yield CampaignsView(self.root)
             with TabPane("Plan  F2", id="plan"):
                 yield PlanView(self.root)
-            with TabPane("Mailbox  F3", id="mailbox"):
+            with TabPane("Settings  F3", id="mailbox"):
                 yield MailboxView()
         yield Footer()
 

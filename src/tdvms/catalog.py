@@ -26,7 +26,7 @@ import math
 import pathlib
 from dataclasses import dataclass
 
-from tdvms.client import DEFAULT_NETCODES, STRONG_MOTION
+from tdvms.client import DEFAULT_NETCODES, STRONG_MOTION  # noqa: F401 -- re-exported
 
 DATA = pathlib.Path(__file__).parent / "data"
 STATIONS = DATA / "stations.csv"
