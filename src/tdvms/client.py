@@ -29,15 +29,26 @@ REQUEST_URL = "https://tdvmservis.afad.gov.tr/GetData"
 # pair in this campaign's network, is one of the ones that could not be asked
 # for.
 #
-# TK is excluded by default. Its 879 stations are strong-motion
-# accelerometers, a different instrument class from the broadbands this
-# campaign is built on, and mixing sensor types across a station pair is a
-# mistake this project has already made once.
-DEFAULT_NETCODES = ("TU", "KO", "TB")
+# TK is the strong-motion network: 883 accelerometers, a different instrument
+# class from the broadbands in TU, KO and TB. It was left out of this list so
+# the two could not be mixed by accident, which only made a TK station that was
+# picked on purpose fail at submission -- rejected as unlisted, and its whole
+# station retired. It is listed now; choosing it stays deliberate, because the
+# TUI hides TK behind a toggle and `plan` names the network it resolved.
+DEFAULT_NETCODES = ("TU", "KO", "TB", "TK")
+STRONG_MOTION = ("TK",)
 
 # On the three codes that exist in two networks -- ALT, KULU, MADM -- prefer
-# this one, so a bare code keeps resolving the way it always did.
+# this one, so a bare code keeps resolving the way it always did. A code shared
+# with the strong-motion network resolves to the broadband one; none is today.
 PREFERRED_NETWORK = "TU"
+
+
+def _rank(record):
+    """Lower wins when one bare code is listed in several networks."""
+    net = record.get("network")
+    return 0 if net == PREFERRED_NETWORK else 2 if net in STRONG_MOTION else 1
+
 
 # The portal's own result codes, from the web client it ships.
 RESULT_OK, RESULT_QUEUED, RESULT_ERROR, RESULT_BUSY = 0, 109, 110, 111
@@ -110,8 +121,8 @@ class Client:
 
         Returns:
             Dict of bare code to the portal's record. Where a code exists in
-            two networks the preferred one wins, so a bare code resolves as it
-            always did.
+            two networks TU wins, then any broadband, then strong motion, so a
+            bare code resolves as it always did.
         """
         if self._stations is None:
             r = self.session.post(STATIONS_URL,
@@ -122,7 +133,7 @@ class Client:
             out = {}
             for s in r.json():
                 code = s["code"]
-                if code in out and out[code].get("network") == PREFERRED_NETWORK:
+                if code in out and _rank(out[code]) <= _rank(s):
                     continue
                 out[code] = s
             self._stations = out

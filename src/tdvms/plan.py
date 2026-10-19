@@ -41,7 +41,7 @@ def verify(station, client=None):
         SystemExit: If the code is not listed. Near-matches are printed, which
             is what turns "not in the station list" into an actionable message.
     """
-    from tdvms.client import Client
+    from tdvms.client import STRONG_MOTION, Client
     client = client or Client()
     try:
         codes = client.station_codes()
@@ -56,7 +56,9 @@ def verify(station, client=None):
             net = client.station_network(station)
             dev = client.device_code(station)
             if net != "TU" or dev != "H":
-                print(f"  [i] {station} is network {net}, instrument {dev}")
+                kind = (" -- strong motion, an accelerometer rather than a "
+                        "broadband" if net in STRONG_MOTION else "")
+                print(f"  [i] {station} is network {net}, instrument {dev}{kind}")
         except Exception:
             pass
         return
