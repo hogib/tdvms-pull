@@ -35,6 +35,20 @@ def test_the_window_comes_from_the_archive_not_the_ledger():
     assert end.strftime("%Y-%m-%d") == "2025-09-30"
 
 
+@pytest.mark.parametrize("name, station", [
+    ("KO_SVRC_25092019_000000_16102019_000000_BH.mseed", "SVRC"),
+    ("TB_MARM_23102024_000000_13112024_000000_HH.mseed", "MARM"),
+    ("TU_ELZG_25092019_000000_16102019_000000_HH.mseed", "ELZG"),
+])
+def test_a_member_from_any_network_names_its_window(name, station):
+    """Every SVRC archive -- KO, BH channels -- was filed UNMATCHED because the
+    pattern demanded a TU_ prefix, so 15 windows of good data were downloaded,
+    left holding their slots, and requested again after the submit timeout."""
+    got, start, end = fetch.window_from_member(name)
+    assert got == station
+    assert (end - start).days == 21
+
+
 def test_a_name_that_is_not_a_tdvms_member_yields_nothing_rather_than_a_guess():
     assert fetch.window_from_member("something_else.mseed") == (None, None, None)
 

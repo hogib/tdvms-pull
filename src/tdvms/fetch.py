@@ -31,12 +31,18 @@ from datetime import datetime
 
 import requests
 
-# The portal names members TU_<STA>_<DDMMYYYY>_<HHMMSS>_<DDMMYYYY>_<HHMMSS>_<CH>.
+# The portal names members <NET>_<STA>_<DDMMYYYY>_<HHMMSS>_<DDMMYYYY>_<HHMMSS>_<CH>.
 # The channel suffix is NOT required: a no-data notice is named for the same
 # window but ends after the second timestamp, and demanding the trailing "_"
 # made every notice match no chunk at all -- so the one answer that needs no
 # download was the one answer that could not be recorded.
-MEMBER_RE = re.compile(r"TU_([A-Z0-9]+)_(\d{8})_(\d{6})_(\d{8})_(\d{6})")
+#
+# The network is any code, not "TU". A hardcoded TU_ here outlived the fix that
+# opened KO and TB to requests: every SVRC archive (KO_SVRC_..._BH.mseed) was
+# downloaded, filed UNMATCHED, its slot left held, and the window requested
+# again after the submit timeout -- 15 windows of good data that the ledger
+# recorded as never having arrived.
+MEMBER_RE = re.compile(r"(?:[A-Z0-9]{2})_([A-Z0-9]+)_(\d{8})_(\d{6})_(\d{8})_(\d{6})")
 
 
 class Result:
