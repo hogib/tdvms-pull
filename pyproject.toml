@@ -3,6 +3,8 @@ name = "tdvms"
 version = "0.1.0"
 description = "A self-supervising AFAD/TDVMS download campaign: submit, fetch and free the slot in one process"
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "Oguzb", email = "hoguzbolat@gmail.com" }
 ]

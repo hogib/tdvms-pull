@@ -38,6 +38,7 @@ left off.
 - [Catalogs](#catalogs)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
+- [License](#license)
 
 ## Requirements
 
@@ -429,5 +430,12 @@ src/tdvms/
   tui/           the terminal UI: model.py (logic), mapview.py (map), app.py (screens)
 ```
 
-Waveform data comes from AFAD. Follow AFAD's terms of use, and credit the data
-source in work that uses it.
+## License
+
+tdvms is released under the [MIT License](LICENSE).
+
+That covers this software only. The waveform data it downloads comes from AFAD
+and is subject to AFAD's terms of use; credit the data source in work that uses
+it. The shipped catalogs keep their own sources' terms: the station list comes
+from the TDVMS portal, and the earthquake catalog (USGS) and map outline
+(Natural Earth) are public domain.
