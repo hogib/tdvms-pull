@@ -19,6 +19,9 @@ answers, and the next submissions to `+m2` and `+m5` came straight back as
 `[111] BUSY` because AFAD was still holding the abandoned requests. A slot is
 submittable only when BOTH agree, which is what `busy_until` below encodes.
 """
+import fcntl
+import os
+import pathlib
 from datetime import datetime, timedelta, timezone
 
 from tdvms.ledger import IN_FLIGHT
@@ -43,6 +46,74 @@ def pool(address, slots):
             f"{address!r} is already a plus-address; give the base address "
             f"(e.g. {local.split('+')[0]}@{domain}) and let the pool extend it")
     return [f"{local}+a{i}@{domain}" for i in range(1, slots + 1)]
+
+
+class PoolHeld(Exception):
+    """Another live process is already working this address pool."""
+
+
+def lock_path(address, root=None):
+    """Where the pool lock for a base address lives. Per user, not per ledger."""
+    root = pathlib.Path(root or os.environ.get("XDG_STATE_HOME")
+                        or pathlib.Path.home() / ".local" / "state")
+    return root / "tdvms" / f"{address.strip().lower()}.lock"
+
+
+def holder(address, root=None):
+    """`"pid N, ledger PATH"` if a live process holds this pool, else None.
+
+    Probes with a non-blocking lock rather than trusting the file's text: the
+    text outlives its writer, the flock does not.
+    """
+    path = lock_path(address, root)
+    if not path.exists():
+        return None
+    with open(path) as fh:
+        try:
+            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
+        except BlockingIOError:
+            return fh.read().strip() or "another process"
+        fcntl.flock(fh, fcntl.LOCK_UN)
+    return None
+
+
+def hold(address, ledger_path, root=None):
+    """Takes the address pool for this process, or says who already has it.
+
+    Two runs on one base address submit from the same `+aN` slots and read the
+    same inbox, and a link to a slot is acted on by whichever reads it first.
+    That ran for hours: a finished balikesir run, which ignored the SIGINT meant
+    to stop it, downloaded eleven of silivri's archives, filed them UNMATCHED in
+    its own directory and marked the mail read -- leaving silivri's slots to
+    wait out the submit timeout and ask for the same windows again.
+
+    The lock is keyed by the address, not the ledger, because the collision is
+    on the address. It lives in a per-user directory rather than next to the
+    ledger so two ledgers in two directories still meet on it, and it is an
+    flock, so the kernel drops it when the holder dies and it can never go
+    stale.
+
+    Returns:
+        The open lock file. Keep a reference for as long as the pool is in use.
+
+    Raises:
+        PoolHeld: Naming the holder's pid and ledger.
+    """
+    path = lock_path(address, root)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(path, "a+")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        fh.seek(0)
+        who = fh.read().strip()
+        fh.close()
+        raise PoolHeld(who or "another process") from None
+    fh.seek(0)
+    fh.truncate()
+    fh.write(f"pid {os.getpid()}, ledger {pathlib.Path(ledger_path).resolve()}\n")
+    fh.flush()
+    return fh
 
 
 class Slot:

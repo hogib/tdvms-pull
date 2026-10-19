@@ -8,7 +8,7 @@ one that was never created.
 import pytest
 
 from conftest import chunk, write
-from tdvms.slots import Pool, pool
+from tdvms.slots import Pool, PoolHeld, hold, pool
 
 
 def test_a_pool_is_one_address_and_a_count():
@@ -71,3 +71,38 @@ def test_a_cooldown_of_zero_expires_immediately():
     p = Pool("you@gmail.com", 1)
     p.get("you+a1@gmail.com").mark_busy(0)
     assert p.get("you+a1@gmail.com").free
+
+
+def test_a_second_holder_of_one_address_is_refused_and_told_who(tmp_path):
+    """A finished balikesir run lived on beside silivri's on the same address
+    and took eleven of its archives: downloaded, filed UNMATCHED, mail marked
+    read. The pool is now held by one process at a time."""
+    first = hold("you@gmail.com", tmp_path / "balikesir_ledger.jsonl", root=tmp_path)
+    with pytest.raises(PoolHeld, match="balikesir_ledger.jsonl"):
+        hold("You@Gmail.com", tmp_path / "silivri_ledger.jsonl", root=tmp_path)
+    first.close()
+    hold("you@gmail.com", tmp_path / "silivri_ledger.jsonl", root=tmp_path).close()
+
+
+def test_two_addresses_do_not_contend(tmp_path):
+    a = hold("you@gmail.com", tmp_path / "a.jsonl", root=tmp_path)
+    b = hold("other@gmail.com", tmp_path / "b.jsonl", root=tmp_path)
+    a.close()
+    b.close()
+
+
+def test_run_refuses_an_address_another_run_holds(tmp_path, monkeypatch):
+    import argparse
+
+    from tdvms import run
+
+    monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path))
+    led = write(tmp_path / "l.jsonl", [chunk()])
+    held = hold("you@gmail.com", tmp_path / "other.jsonl")
+    p = argparse.ArgumentParser()
+    p.add_argument("--ledger")
+    run.add_args(p)
+    args = p.parse_args(["--ledger", str(led.path), "--address", "you@gmail.com"])
+    with pytest.raises(SystemExit, match="already being worked"):
+        run.run(args)
+    held.close()

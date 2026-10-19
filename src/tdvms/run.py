@@ -15,6 +15,7 @@ Nothing here needs an operator between ticks. `status` remains for looking, and
 `plan` for adding work.
 """
 import argparse
+import signal
 import sys
 import time
 
@@ -22,7 +23,7 @@ from tdvms.client import Client
 from tdvms.ledger import Ledger
 from tdvms.mailbox import Mailbox
 from tdvms.report import summarise
-from tdvms.slots import Pool
+from tdvms.slots import Pool, PoolHeld, hold
 from tdvms.supervisor import Config, cycle
 
 NAME = "run"
@@ -89,6 +90,17 @@ def run(args):
         sys.exit(f"[ERROR] {ledger.path} is empty. Run `tdvms plan` first, or "
                  f"`tdvms adopt --from <old ledger>`.")
     pool = Pool(args.address, args.slots)
+    # A dry run flags no mail and submits nothing, so it may look at a pool a
+    # live run is working. Anything else must have the pool to itself.
+    lock = None
+    if not args.dry_run:
+        try:
+            lock = hold(args.address, ledger.path)
+        except PoolHeld as e:
+            sys.exit(f"[ERROR] {args.address} is already being worked ({e}).\n"
+                     f"        Two runs on one address share its slots and its "
+                     f"inbox, and each\n        downloads and marks read the "
+                     f"other's mail. Stop that run first.")
     cfg = Config(out_dir=args.out_dir, claim_timeout=args.claim_timeout,
                  submit_timeout=args.submit_timeout, max_attempts=args.max_attempts,
                  nodata_streak=args.nodata_streak, busy_cooldown=args.busy_cooldown,
@@ -123,11 +135,21 @@ def run(args):
         time.sleep(args.interval)
 
 
+def _interrupt(signum, frame):
+    raise KeyboardInterrupt
+
+
 def main():
     p = argparse.ArgumentParser(prog="tdvms run", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")
     add_args(p)
+    # Both stop the loop the same clean way. SIGINT is restored explicitly: a
+    # job started with `&` from a script inherits it IGNORED, so the queue's
+    # `kill -INT` did nothing and a finished run lived on, reading mail that
+    # belonged to the next one.
+    signal.signal(signal.SIGINT, signal.default_int_handler)
+    signal.signal(signal.SIGTERM, _interrupt)
     try:
         return run(p.parse_args())
     except KeyboardInterrupt:
