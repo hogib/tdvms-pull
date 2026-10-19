@@ -24,6 +24,12 @@ left off.
   network connection.
 - **Self-repairing.** Lost links, a portal that answers "busy", stations that
   never return data and dropped mail connections are all handled without you.
+- **Several campaigns in a row** on one address, each finishing on its own.
+- **Knows what it has.** A coverage report reads every archive and shows, per
+  station and channel, how much of your period is really there and where the
+  gaps are.
+- **Tells you when it needs you**, by phone (ntfy) or desktop notification, and
+  pauses itself before the disk fills.
 
 ## Contents
 
@@ -35,6 +41,7 @@ left off.
 - [Command-line reference](#command-line-reference)
 - [Running for days](#running-for-days)
 - [Mailbox setup](#mailbox-setup)
+- [Notifications](#notifications)
 - [Catalogs](#catalogs)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -78,7 +85,8 @@ uv run tdvms-tui
 **2. Set up the mailbox (F3).** Enter your IMAP server, address and password,
 press **Test connection**, then **Save**. For Gmail, use `imap.gmail.com` and an
 [app password](https://myaccount.google.com/apppasswords), not your account
-password.
+password. Optionally, add a [notification](#notifications) target on the same
+screen.
 
 **3. Plan a download (F2).** Move around the map and press `space` on the
 stations you want. Or press `e` to choose an earthquake: every station within
@@ -93,8 +101,9 @@ setsid nohup uv run tdvms run --ledger campaigns/van-2011/ledger.jsonl \
     >> campaigns/van-2011/run.log 2>&1 &
 ```
 
-**5. Watch it (F1).** Progress, the slots in use, every window and the live log.
-Archives arrive in `campaigns/van-2011/raw/<STATION>/<STATION>_<date>.zip`.
+**5. Watch it (F1).** Progress, the slots in use, every window, the live log,
+and how much of each station's period the archives really cover. Archives
+arrive in `campaigns/van-2011/raw/<STATION>/<STATION>_<date>.zip`.
 
 The same without the UI:
 
@@ -103,7 +112,8 @@ export TDVMS_IMAP_HOST=imap.gmail.com TDVMS_IMAP_USER=you@gmail.com
 export TDVMS_IMAP_PASS='<app password>'
 
 uv run tdvms plan --ledger elba.jsonl --station ELBA --start 2024-01-01 --end 2024-07-01
-uv run tdvms run  --ledger elba.jsonl --out-dir elba_raw --address you@gmail.com --slots 8
+uv run tdvms run  --ledger elba.jsonl --address you@gmail.com --slots 8
+uv run tdvms coverage --ledger elba.jsonl
 ```
 
 ## Concepts
@@ -152,15 +162,17 @@ is safe to leave open next to a running campaign.
 
 ### Campaigns (F1)
 
-Every campaign, with its progress, and a ● when a download is running.
+Every campaign, with its progress: ● while a download is working on it, ◌ while
+it waits its turn in a running `tdvms queue`.
 
 | tab | shows | keys |
 |---|---|---|
-| Overview | totals per state and per station, turnaround times, anything stuck | |
+| Overview | totals per state and per station, turnaround times, anything stuck, free disk space | |
 | Slots | each address, the window it holds and for how long | |
 | Chunks | every window; type to filter by station, state, slot or note | `r` requeue the selected window |
 | Log | the running download's output, live | |
 | Strays | archives a download kept but couldn't match to its own campaign | `i` file it into the campaign that wants it, `d` delete a duplicate |
+| Coverage | per station and channel: how much of the period the archives cover, the gaps, and a timeline | |
 
 ### Plan (F2)
 
@@ -183,11 +195,18 @@ map, set the start and end dates and the window length, and choose an existing
 campaign or a new one. You can put a new campaign's downloads on another disk.
 The preview shows exactly how many windows the plan adds before you confirm.
 
-### Mailbox (F3)
+Your earlier campaigns count too. The list's **past** column shows each
+station's record across every ledger (`12✓ 3✗`: fetched, no data). A station
+that has never returned data is drawn as ⊘ on the map. Picking one adds a
+warning naming the period it was silent for. No-data is about a period, not a
+station forever, so this only warns.
 
-The three mailbox settings, where each one currently comes from (the environment
-or the saved file), a **Test connection** button, and **Save**. See
-[Mailbox setup](#mailbox-setup).
+### Settings (F3)
+
+The three mailbox settings and the notification targets, each showing where its
+current value comes from (the environment or the saved file), with a button to
+test each before you **Save**. See [Mailbox setup](#mailbox-setup) and
+[Notifications](#notifications).
 
 ## Command-line reference
 
@@ -199,6 +218,8 @@ tdvms <command> [options]          tdvms <command> --help for every option
 |---|---|
 | `plan` | add a station's windows to a ledger |
 | `run` | the downloader: submit, receive, download, repeat |
+| `queue` | run several campaigns one after another on one address |
+| `coverage` | what the archives actually cover, and the gaps |
 | `status` | summarise a ledger, including anything stuck |
 | `reset` | put one window back in the queue |
 | `ingest` | file an archive that is already on disk |
@@ -224,27 +245,39 @@ tdvms plan --ledger my.jsonl --station ELBA --start 2023-01-01 --end 2024-01-01
 | `--chunk-days N` | `21` | window length |
 | `--no-verify` | | skip checking the code against the portal's station list |
 
+If an earlier campaign in the same folder found that this station returned no
+data, `plan` says so and for which period, then plans anyway.
+
 ### `tdvms run`
 
 The downloader. Each cycle it reads the inbox and downloads whatever has
 arrived, frees the slots those requests held, repairs anything stalled, then
 fills every free slot with the oldest waiting window. Stations take turns, so
-one big station can't starve the others. It runs until you stop it.
+one big station can't starve the others. It runs until you stop it, or with
+`--exit-when-done`, until every window has an outcome.
 
 ```bash
-tdvms run --ledger my.jsonl --out-dir my_raw --address you@gmail.com --slots 8
+tdvms run --ledger my.jsonl --address you@gmail.com --slots 8
 ```
 
 | option | default | |
 |---|---|---|
 | `--address EMAIL` | required | your **base** address; slots are made from it |
 | `--slots N` | `8` | how many plus-addresses to use at once |
-| `--out-dir DIR` | `afad_raw` | where archives go: `DIR/<STATION>/<STATION>_<date>.zip` |
+| `--out-dir DIR` | the campaign's folder | where archives go: `DIR/<STATION>/<STATION>_<date>.zip`. Default: `campaigns/<name>/raw`, or `<name>_raw` next to `<name>_ledger.jsonl`, else `afad_raw` |
 | `--station CODE` | all | only request these stations (repeatable) |
 | `--interval SECONDS` | `60` | pause between cycles |
 | `--once` | | run one cycle, print the summary, exit |
+| `--exit-when-done` | | exit once every window has an outcome |
 | `--dry-run` | | show what a cycle would do; changes nothing anywhere |
 | `--timeout SECONDS` | `180` | how long to wait for the portal to accept a request |
+
+Disk and notification options:
+
+| option | default | |
+|---|---|---|
+| `--min-free-gb GB` | twice the largest archive, at least 2 | below this much free space, nothing is downloaded or submitted until there is room; `0` turns it off |
+| `--notify TARGET` | saved setting | an ntfy URL, any URL that accepts a POST, or `desktop` (repeatable); see [Notifications](#notifications) |
 
 Mailbox options:
 
@@ -274,6 +307,47 @@ tdvms status --ledger my.jsonl --address you@gmail.com --slots 8   # plus each s
 
 Counts per state and per station, data volume, turnaround times, and anything
 stuck, each with its age. A station that has never returned data is flagged.
+
+### `tdvms queue`
+
+```bash
+tdvms queue balikesir silivri van-2011 --address you@gmail.com --slots 15
+```
+
+Runs campaigns one after another on one address, in one process. Each starts
+the moment the one before it has an outcome for every window. Campaigns are
+named as the terminal UI lists them, or given as ledger paths. Each downloads
+into its own folder, and finished ones are skipped, so running the same queue
+again after a stop carries on where it left off. It takes the same options as
+`run`, except those that belong to a single campaign (`--out-dir`, `--station`,
+`--once`, `--dry-run`).
+
+### `tdvms coverage`
+
+```bash
+tdvms coverage --ledger my.jsonl
+tdvms coverage --ledger my.jsonl --station ELBA --gaps --min-gap 600
+```
+
+```
+  station  channel         covered       of   gaps  largest gap
+  VMUR     HHZ               93.6%  201.0 d     45  9.5 d at 2011-07-23 00:00 (data gap)
+```
+
+Reads every downloaded archive and reports, per station and channel, how much
+of the requested period is really there. Each gap gets a reason: a **data gap**
+inside an archive, **no data at source** (the portal said so), or **not
+downloaded yet**. It reads only miniSEED record headers, so it's quick: a
+300 MB archive takes about 3 s. Results are cached in the download folder
+(`.coverage.json`), so later runs only read new archives.
+
+| option | default | |
+|---|---|---|
+| `--station CODE` | all | only these stations (repeatable) |
+| `--gaps` | | list every gap, not just the largest |
+| `--min-gap SECONDS` | `1` | ignore shorter gaps |
+| `--out-dir DIR` | the campaign's folder | where the archives are |
+| `--refresh` | | read every archive again, ignoring the cache |
 
 ### `tdvms reset`
 
@@ -311,7 +385,7 @@ only read, never changed.
 Start the downloader detached, so it outlives your terminal:
 
 ```bash
-setsid nohup uv run tdvms run --ledger my.jsonl --out-dir my_raw \
+setsid nohup uv run tdvms run --ledger my.jsonl \
     --address you@gmail.com --slots 8 >> my_run.log 2>&1 &
 ```
 
@@ -322,10 +396,16 @@ A `tmux` or `screen` session works just as well.
 - **One download per address.** Two downloads using the same base address would
   share slots and read each other's mail. A second one is refused, with a
   message naming the first.
-- **Several campaigns.** Run them one after another on the same address, or side
-  by side on *different* base addresses. Different addresses can share one
-  mailbox safely: mail for a slot a download didn't use is left unread for its
-  owner.
+- **Several campaigns.** On one address, run them in turn with `tdvms queue`. On
+  *different* base addresses they can run side by side, even sharing one
+  mailbox: mail for a slot a download didn't use is left unread for its owner.
+- **Disk space.** Before downloading and before submitting, the loop checks the
+  free space under the download folder. Below the reserve (by default twice the
+  largest archive so far, at least 2 GB) it pauses both and says so once in the
+  log, leaving incoming mail unread until there's room. Free some space and it
+  carries on by itself.
+- **Notifications.** Add `--notify https://ntfy.sh/<your-topic>` to hear when a
+  campaign finishes or needs you. See [Notifications](#notifications).
 - **Throughput.** The portal works through requests at its own pace. Expect
   replies within one to a few hours. More slots means more windows in flight at
   once.
@@ -357,6 +437,33 @@ names are accepted too. Nothing else is stored.
 tdvms only marks mail as read after it has dealt with it. A download that
 fails is also flagged (starred), so you can find it.
 
+## Notifications
+
+`run` and `queue` can tell you when a campaign needs a person, once when the
+problem starts and again when it clears, and when it's complete:
+
+- the mailbox has been unreadable for several cycles in a row
+- the disk is too full to download or submit
+- every slot is cooling down after the portal answered BUSY
+- requests are out but nothing has come back for 3 hours
+- a station was retired, or a window given up on
+- the campaign is complete (and, for `queue`, the whole queue)
+
+A target is any of:
+
+- **an [ntfy](https://ntfy.sh) topic**, e.g. `https://ntfy.sh/tdvms-k3v9x2`. Pick
+  a topic nobody would guess and subscribe to it in the ntfy phone app; nothing
+  else to set up. A self-hosted ntfy server works the same way.
+- **any URL that accepts a POST**. The message is the body; the title is in a
+  `Title` header.
+- **`desktop`**: a desktop notification through `notify-send` (Linux) or
+  `osascript` (macOS).
+
+Set them in the terminal UI (Settings, F3; **Send a test** checks them), in
+`TDVMS_NOTIFY` (comma-separated), or with `--notify`. The command line wins, then
+the environment, then the saved file (`~/.config/tdvms/notify.env`). A
+notification that fails is logged and never stops the download.
+
 ## Catalogs
 
 Shipped with the package in `src/tdvms/data/`:
@@ -385,7 +492,7 @@ Notes:
 or so: the portal queues requests and mails links later. `status`, or the
 Overview tab, shows each waiting request and how long it has waited.
 
-**"missing mailbox credentials".** Set them on the Mailbox tab (F3), or export
+**"missing mailbox credentials".** Set them on the Settings tab (F3), or export
 the three variables. See [Mailbox setup](#mailbox-setup).
 
 **"the portal does not list 'XXXX'".** The code isn't in the portal's station
@@ -404,6 +511,17 @@ Strays tab files each one into the campaign that wants it.
 
 **"already being worked".** Another download is using that address. Stop it
 first, or use a different base address.
+
+**`[DISK] … kept in reserve` in the log.** The download folder's disk is nearly
+full, so nothing is downloaded or submitted. Free some space, or move the
+folder to a bigger disk and leave a symlink, and the loop resumes by itself.
+
+**`[!] XXXX: … no-data answer(s)` when planning.** An earlier campaign asked
+for this station and got nothing back for the period shown. It's planned
+anyway; drop it if your dates fall in that period.
+
+**Fetched, but is the data all there?** Run `tdvms coverage`, or open the
+Coverage tab. A fetched window can still have holes inside it.
 
 ## Development
 
@@ -425,6 +543,9 @@ src/tdvms/
   ledger.py      the ledger           slots.py        slots and the per-address lock
   client.py      the portal           mailbox.py      the inbox
   credentials.py mailbox settings     fetch.py        download, verify, file
+  queue.py       campaigns in turn    campaign.py     where a campaign's files live
+  coverage.py    miniSEED coverage    history.py      what past campaigns learnt
+  disk.py        the free-space guard notify.py       notifications
   plan.py  report.py  reset.py  ingest.py  adopt.py   the other commands
   catalog.py     the catalogs         data/           stations, events, map outline
   tui/           the terminal UI: model.py (logic), mapview.py (map), app.py (screens)
