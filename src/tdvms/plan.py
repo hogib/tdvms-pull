@@ -11,6 +11,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 
+from tdvms import history
 from tdvms.ledger import Ledger, chunk_id
 
 NAME = "plan"
@@ -109,6 +110,10 @@ def run(args):
               f"(the portal lists bare codes; the network is in the payload)")
     if args.verify:
         verify(station)
+    warning = history.gather(history.around(args.ledger)).get(station)
+    if warning and warning.warning():
+        print(f"  [!] {warning.warning()}\n"
+              f"      planned anyway -- no-data is about a period, not forever")
     ledger = Ledger(args.ledger)
     added = enumerate_chunks(ledger, station, args.start, args.end,
                              args.chunk_days)
