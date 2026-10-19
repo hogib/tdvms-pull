@@ -19,11 +19,12 @@ every chunk has an outcome, which is what lets campaigns run one after another
 (`tdvms queue` does exactly that, in one process).
 """
 import argparse
+import pathlib
 import signal
 import sys
 import time
 
-from tdvms import campaign, notify
+from tdvms import campaign, compat, notify, settings
 from tdvms.client import Client
 from tdvms.ledger import Ledger
 from tdvms.mailbox import Mailbox
@@ -37,13 +38,19 @@ HELP = "the supervised loop: reap, reclaim, retire, submit"
 
 def add_args(p, single=True):
     """`run`'s options. `single=False` leaves out the per-campaign ones for `queue`."""
-    p.add_argument("--address", required=True,
+    p.add_argument("--address", default=None,
                    help="the BASE address, e.g. you@gmail.com. The pool extends "
                         "it to you+a1@..., you+a2@... -- the portal keys its "
                         "one-request-at-a-time limit on the literal string, so "
-                        "each is a separate slot delivering to one inbox.")
-    p.add_argument("--slots", type=int, default=8,
-                   help="how many plus-addresses the pool holds")
+                        "each is a separate slot delivering to one inbox. "
+                        "Default: the mailbox address (TDVMS_IMAP_USER).")
+    p.add_argument("--slots", type=int, default=None,
+                   help="how many plus-addresses the pool holds. Default: "
+                        "TDVMS_SLOTS, else what tdvms-tui saved, else 8")
+    p.add_argument("--log", default=None, metavar="FILE",
+                   help="append all output to FILE instead of the terminal -- "
+                        "for starting the loop detached on any OS; the TUI's "
+                        "Log tab follows it")
     if single:
         p.add_argument("--station", action="append", default=None, dest="stations",
                        help="repeatable; restrict submissions to these stations. "
@@ -119,10 +126,42 @@ def config(args, out_dir):
                   dry_run=getattr(args, "dry_run", False), min_free_gb=args.min_free_gb)
 
 
-def take_pool(address, ledger_path):
+def pool_from(args):
+    """`(address, slots)` from the options, the environment or saved settings.
+
+    Fills them into `args` too, so everything after sees the values in use.
+    """
+    try:
+        args.slots = settings.slots(args.slots)
+    except ValueError as e:
+        sys.exit(f"[ERROR] {e}")
+    args.address = settings.address(args.address)
+    if not args.address:
+        sys.exit("[ERROR] no address to make slots from: pass --address you@gmail.com, "
+                 "or set the mailbox address (TDVMS_IMAP_USER, or tdvms-tui Settings)")
+    return args.address, args.slots
+
+
+def log_to(path):
+    """Sends this process's output to `path`, appended, line by line."""
+    p = pathlib.Path(path)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fh = open(p, "a", encoding="utf-8", errors="replace", buffering=1)
+    sys.stdout = sys.stderr = fh
+    return p.resolve()
+
+
+def describe(args, out_dir, **more):
+    """What the pool lock says about this run, for `tdvms-tui` on any OS."""
+    log = getattr(args, "log_path", None) or compat.stdout_path()
+    return {"slots": args.slots, "out_dir": str(pathlib.Path(out_dir).resolve()),
+            "log": str(log) if log else None, **more}
+
+
+def take_pool(address, ledger_path, **info):
     """The pool lock, or an exit naming whoever has it."""
     try:
-        return hold(address, ledger_path)
+        return hold(address, ledger_path, **info)
     except PoolHeld as e:
         sys.exit(f"[ERROR] {address} is already being worked ({e}).\n"
                  f"        Two runs on one address share its slots and its "
@@ -170,10 +209,11 @@ def run(args):
                  f"`tdvms adopt --from <old ledger>`.")
     camp = campaign.for_ledger(args.ledger)
     out_dir = args.out_dir or camp.raw
-    pool = Pool(args.address, args.slots)
+    pool = Pool(*pool_from(args))
     # A dry run flags no mail and submits nothing, so it may look at a pool a
     # live run is working. Anything else must have the pool to itself.
-    lock = None if args.dry_run else take_pool(args.address, ledger.path)  # noqa: F841
+    lock = None if args.dry_run else take_pool(  # noqa: F841
+        args.address, ledger.path, **describe(args, out_dir, command="run"))
     cfg = config(args, out_dir)
     mailbox = Mailbox(args.folder, args.search)
     client = Client(timeout=args.timeout)
@@ -191,6 +231,14 @@ def run(args):
         print()
         summarise(ledger, pool)
     return 0
+
+
+def start(args):
+    """What every loop does before its first cycle: output, then signals."""
+    compat.utf8_output()
+    if args.log:
+        args.log_path = log_to(args.log)
+    handle_signals()
 
 
 def handle_signals():
@@ -217,9 +265,10 @@ def main():
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")
     add_args(p)
-    handle_signals()
+    args = p.parse_args()
+    start(args)
     try:
-        return run(p.parse_args())
+        return run(args)
     except KeyboardInterrupt:
         print(STOPPED)
         return 0

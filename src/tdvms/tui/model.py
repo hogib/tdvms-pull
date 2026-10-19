@@ -6,8 +6,10 @@ the two repairs the CLI already offers (`reset`, `ingest`) plus filing the
 strays a shared inbox leaves behind.
 
 **Monitor and repair only.** Nothing here starts or stops a run. A run is found
-by reading `/proc`, and every write goes through `Ledger`'s own locked methods,
-so the TUI is safe to leave open beside a live campaign.
+through the pool lock it holds, which says what it is working on (and, on
+Linux, through `/proc` for runs started before locks described themselves).
+Every write goes through `Ledger`'s own locked methods, so the TUI is safe to
+leave open beside a live campaign.
 """
 import os
 import pathlib
@@ -17,13 +19,14 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
+from tdvms import compat
 from tdvms import fetch as fetching
 from tdvms.campaign import CAMPAIGNS, NAME_RE, Campaign, discover, new_campaign  # noqa: F401
 from tdvms.campaign import for_ledger as campaign_for
 from tdvms.ledger import IN_FLIGHT, TERMINAL, chunk_id, now
 from tdvms.plan import enumerate_chunks
 from tdvms.report import summarise
-from tdvms.slots import Pool
+from tdvms.slots import Pool, holders
 
 SLOT_RE = re.compile(r"^(?P<local>[^+@]+)\+a(?P<n>\d+)@(?P<domain>.+)$", re.I)
 
@@ -105,13 +108,28 @@ def _queued(specs, cwd, root):
     return out
 
 
-def live_runs(proc="/proc"):
-    """Every `tdvms run` and `tdvms queue` here. Empty with no `/proc` (macOS)."""
-    runs = []
+def _from_lock(info):
+    log, ledger = info.get("log"), info.get("ledger")
+    return LiveRun(int(info["pid"]), pathlib.Path(ledger) if ledger else None,
+                   info.get("address"), int(info.get("slots") or 8),
+                   info.get("out_dir") or "", pathlib.Path(log) if log else None, False,
+                   info.get("command") or "run",
+                   tuple(pathlib.Path(q) for q in info.get("queue") or ()))
+
+
+def live_runs(proc="/proc", state=None):
+    """Every `tdvms run` and `tdvms queue` on this machine.
+
+    From the pool locks first -- every OS, and exact about which campaign a
+    queue is on -- then from `/proc` where there is one, for runs whose lock
+    does not describe them.
+    """
+    runs = [_from_lock(info) for info in holders(state)]
+    seen = {r.pid for r in runs}
     if not pathlib.Path(proc).is_dir():
         return runs
     for d in pathlib.Path(proc).iterdir():
-        if not d.name.isdigit():
+        if not d.name.isdigit() or int(d.name) in seen:
             continue
         try:
             raw = (d / "cmdline").read_bytes()
@@ -268,21 +286,27 @@ def suggest_name(event):
     return f"{slug}-{event.date[:4]}"
 
 
-def run_command(campaign, root, address=None, slots=None):
+def run_command(campaign, root, address=None, slots=None, windows=None):
     """The unattended `tdvms run` line for a campaign, paths relative to `root`.
 
-    Detached and logging to the campaign's own `run.log`, which is where the
-    Log tab looks when no live run says otherwise.
+    Detached, and writing its own `run.log` through `--log`, so the one line
+    works the same in a POSIX shell and in PowerShell -- and the Log tab finds
+    it whichever OS it runs on.
     """
+    windows = compat.WINDOWS if windows is None else windows
+
     def rel(p):
         try:
-            return os.path.relpath(p, root)
+            r = os.path.relpath(p, root)
         except ValueError:
-            return str(p)
-    return (f"setsid nohup uv run tdvms run --ledger {rel(campaign.path)} "
-            f"--out-dir {rel(campaign.raw)} "
+            r = str(p)
+        return f'"{r}"' if " " in r else r
+    args = (f"run tdvms run --ledger {rel(campaign.path)} "
             f"--address {address or 'you@gmail.com'} --slots {slots or 8} "
-            f">> {rel(campaign.log)} 2>&1 &")
+            f"--log {rel(campaign.log)}")
+    if windows:
+        return f"Start-Process -WindowStyle Hidden uv -ArgumentList '{args}'"
+    return f"setsid nohup uv {args} > /dev/null 2>&1 &"
 
 
 # --- strays -------------------------------------------------------------------

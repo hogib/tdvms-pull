@@ -11,7 +11,7 @@ import argparse
 import sys
 from datetime import datetime, timedelta
 
-from tdvms import history
+from tdvms import compat, history
 from tdvms.ledger import Ledger, chunk_id
 
 NAME = "plan"
@@ -125,6 +125,7 @@ def run(args):
 
 
 def main():
+    compat.utf8_output()
     p = argparse.ArgumentParser(prog="tdvms plan", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")

@@ -11,6 +11,9 @@ and the flat one campaigns run by hand grew first:
     <name>_ledger.jsonl   <name>_raw/   <name>_run.log
 
 `tdvms_ledger.jsonl`, the CLI's default ledger, downloads to `afad_raw`.
+
+Downloads kept on another disk are reached through `raw` as a symlink, or --
+where the OS will not make one -- through a `raw.path` file naming the folder.
 """
 import pathlib
 import re
@@ -22,6 +25,8 @@ from tdvms.ledger import Ledger
 # `campaigns/<name>/raw`, and `run.log` if the operator sends the loop there.
 CAMPAIGNS = "campaigns"
 NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,39}$")
+# Where a campaign's downloads went when `raw` could not be a symlink.
+POINTER = "raw.path"
 
 
 @dataclass
@@ -46,8 +51,7 @@ def discover(root="."):
     root = pathlib.Path(root)
     found = []
     for p in sorted((root / CAMPAIGNS).glob("*/ledger.jsonl")):
-        found.append(Campaign(p.parent.name, Ledger(p), p.parent / "raw",
-                              p.parent / "run.log"))
+        found.append(for_ledger(p))
     for p in sorted(root.glob("*_ledger.jsonl")):
         name = p.name[:-len("_ledger.jsonl")]
         raw = root / ("afad_raw" if name == "tdvms" else f"{name}_raw")
@@ -73,17 +77,32 @@ def new_campaign(root, name, raw_target=None):
         target = pathlib.Path(raw_target).expanduser().resolve()
         target.mkdir(parents=True, exist_ok=True)
         if not raw.exists():
-            raw.symlink_to(target, target_is_directory=True)
+            try:
+                raw.symlink_to(target, target_is_directory=True)
+            except OSError:
+                # Windows lets only administrators and Developer Mode make
+                # links. A one-line pointer does the same job for tdvms.
+                (home / POINTER).write_text(str(target) + "\n", encoding="utf-8")
     else:
         raw.mkdir(exist_ok=True)
-    return Campaign(name, Ledger(home / "ledger.jsonl"), raw, home / "run.log")
+    return for_ledger(home / "ledger.jsonl")
+
+
+def _raw(home):
+    """A campaign folder's downloads: `raw/`, or wherever `raw.path` points."""
+    pointer = home / POINTER
+    if pointer.is_file():
+        text = pointer.read_text(encoding="utf-8").strip()
+        if text:
+            return pathlib.Path(text)
+    return home / "raw"
 
 
 def for_ledger(path):
     """The campaign a ledger path belongs to, by layout; never None."""
     p = pathlib.Path(path)
     if p.name == "ledger.jsonl" and p.parent.parent.name == CAMPAIGNS:
-        return Campaign(p.parent.name, Ledger(p), p.parent / "raw", p.parent / "run.log")
+        return Campaign(p.parent.name, Ledger(p), _raw(p.parent), p.parent / "run.log")
     if p.name.endswith("_ledger.jsonl"):
         name = p.name[:-len("_ledger.jsonl")]
         raw = p.parent / ("afad_raw" if name == "tdvms" else f"{name}_raw")

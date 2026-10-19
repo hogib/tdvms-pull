@@ -13,7 +13,7 @@ from datetime import date
 import pytest
 
 from conftest import chunk, write
-from tdvms import catalog
+from tdvms import catalog, compat
 from tdvms.tui import model
 
 
@@ -66,11 +66,10 @@ def test_a_new_campaign_is_a_folder_with_its_downloads_beside_it(tmp_path):
     assert c.path == tmp_path / "campaigns" / "van-2011" / "ledger.jsonl"
 
 
-def test_downloads_on_another_disk_are_linked_in_not_moved(tmp_path):
+def test_downloads_on_another_disk_are_reached_not_moved(tmp_path):
     elsewhere = tmp_path / "data-disk" / "van"
     c = model.new_campaign(tmp_path / "repo", "van-2011", elsewhere)
-    assert c.raw.is_symlink() and c.raw.resolve() == elsewhere.resolve()
-    assert elsewhere.is_dir()
+    assert c.raw.resolve() == elsewhere.resolve() and elsewhere.is_dir()
 
 
 @pytest.mark.parametrize("name", ["Van", "", "../up", "a b"])
@@ -97,6 +96,7 @@ def test_the_launcher_is_skipped_so_a_run_is_counted_once(argv, args):
     assert model.run_args(argv) == args
 
 
+@pytest.mark.skipif(compat.WINDOWS, reason="a fake /proc needs symlinks")
 def test_a_run_is_read_from_proc_with_its_ledger_resolved_in_its_own_cwd(tmp_path):
     proc, cwd = tmp_path / "proc", tmp_path / "work"
     (proc / "4242" / "fd").mkdir(parents=True)
@@ -360,6 +360,7 @@ def _campaign_dir(root, name, *rows):
     return home / "ledger.jsonl"
 
 
+@pytest.mark.skipif(compat.WINDOWS, reason="a fake /proc needs symlinks")
 def test_the_tui_reads_a_queue_and_knows_which_campaign_it_is_on(tmp_path):
     done = _campaign_dir(tmp_path, "old", chunk(state="fetched"))
     now_on = _campaign_dir(tmp_path, "first", chunk())
@@ -403,3 +404,28 @@ def test_the_coverage_tab_shows_each_channel(tmp_path):
             return [str(c) for c in t.get_row_at(0)]
     row = asyncio.run(go())
     assert row[0] == "ELBA" and row[1] == "HHZ"
+
+
+def test_the_slot_count_is_saved_from_settings_and_previewed(tmp_path, monkeypatch):
+    pytest.importorskip("textual")
+    from textual.widgets import Input, Static
+
+    from tdvms import settings
+    from tdvms.tui.app import TdvmsApp
+    monkeypatch.setenv("TDVMS_IMAP_USER", "you@gmail.com")
+
+    async def go():
+        app = TdvmsApp(tmp_path)
+        async with app.run_test(size=(160, 60)) as pilot:
+            await pilot.press("f3")
+            await pilot.pause(0.3)
+            app.query_one("#slots", Input).value = "15"
+            await pilot.pause(0.2)
+            preview = str(app.query_one("#slots-source", Static).render())
+            app.query_one("#slots-save").press()
+            await pilot.pause(0.3)
+            return preview
+
+    preview = asyncio.run(go())
+    assert "you+a1@gmail.com … you+a15@gmail.com" in preview
+    assert settings.slots() == 15

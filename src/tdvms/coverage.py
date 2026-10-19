@@ -27,7 +27,7 @@ import zipfile
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
-from tdvms import campaign
+from tdvms import campaign, compat
 from tdvms.ledger import IN_FLIGHT, Ledger
 
 NAME = "coverage"
@@ -308,7 +308,7 @@ def report(ledger, raw, stations=None, refresh=False, progress=None):
     if raw.is_dir():
         tmp = cache_path.with_suffix(".tmp")
         tmp.write_text(json.dumps(cache))
-        tmp.replace(cache_path)
+        compat.replace(tmp, cache_path)
 
     out = []
     for code in sorted({r["station"] for r in rows}):
@@ -448,6 +448,7 @@ def run(args):
 
 
 def main():
+    compat.utf8_output()
     p = argparse.ArgumentParser(prog="tdvms coverage", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")

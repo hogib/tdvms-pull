@@ -13,6 +13,7 @@ without `--station`, an ambiguous date is refused and the candidates are listed.
 import argparse
 import sys
 
+from tdvms import compat
 from tdvms.ledger import Ledger, chunk_id
 
 NAME = "reset"
@@ -64,6 +65,7 @@ def run(args):
 
 
 def main():
+    compat.utf8_output()
     p = argparse.ArgumentParser(prog="tdvms reset", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")

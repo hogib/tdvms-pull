@@ -1,6 +1,7 @@
 """Several campaigns, one after another, on one address pool.
 
     tdvms queue balikesir silivri --address you@gmail.com --slots 15
+    tdvms queue balikesir silivri          # address and slots from Settings
     tdvms queue campaigns/van-2011/ledger.jsonl elba.jsonl --address you@gmail.com
 
 Campaigns on one address cannot run side by side -- they would share its slots
@@ -44,8 +45,10 @@ def run(args):
         camps = [campaign.find(spec, args.root) for spec in args.campaigns]
     except LookupError as e:
         sys.exit(f"[ERROR] {e}")
-    pool = Pool(args.address, args.slots)
-    lock = runner.take_pool(args.address, camps[0].path)
+    pool = Pool(*runner.pool_from(args))
+    lock = runner.take_pool(args.address, camps[0].path,
+                            **runner.describe(args, camps[0].raw, command="queue",
+                                              queue=[str(c.path.resolve()) for c in camps]))
     mailbox = Mailbox(args.folder, args.search)
     client = Client(timeout=args.timeout)
     notifier = notify.Notifier(notify.targets(args.notify))
@@ -60,7 +63,9 @@ def run(args):
         if c.ledger.complete():
             print(f"== {c.name}: already complete, skipping", flush=True)
             continue
-        relabel(lock, c.path)
+        relabel(lock, c.path, address=args.address,
+                **runner.describe(args, c.raw, command="queue",
+                                  queue=[str(x.path.resolve()) for x in camps]))
         pending = sum(1 for r in rows if r["state"] == "pending")
         inflight = sum(1 for r in rows if r["state"] in IN_FLIGHT)
         print(f"== {c.name}: {pending} pending, {inflight} in flight; archives to "
@@ -78,9 +83,10 @@ def main():
     p = argparse.ArgumentParser(prog="tdvms queue", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     add_args(p)
-    runner.handle_signals()
+    args = p.parse_args()
+    runner.start(args)
     try:
-        return run(p.parse_args())
+        return run(args)
     except KeyboardInterrupt:
         print(runner.STOPPED)
         return 0

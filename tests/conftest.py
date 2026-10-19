@@ -16,6 +16,17 @@ from tdvms.ledger import Ledger
 from tdvms.slots import Pool
 
 
+@pytest.fixture(autouse=True)
+def no_real_settings(monkeypatch, tmp_path_factory):
+    """No test reads or writes the operator's own settings, credentials or run
+    locks -- a live campaign's lock would otherwise show up as a running run."""
+    home = tmp_path_factory.mktemp("home")
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "config"))
+    monkeypatch.setenv("XDG_STATE_HOME", str(home / "state"))
+    for var in ("TDVMS_SLOTS", "TDVMS_NOTIFY"):
+        monkeypatch.delenv(var, raising=False)
+
+
 @pytest.fixture
 def ledger_path(tmp_path):
     return tmp_path / "l.jsonl"

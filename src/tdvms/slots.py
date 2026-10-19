@@ -19,11 +19,12 @@ answers, and the next submissions to `+m2` and `+m5` came straight back as
 `[111] BUSY` because AFAD was still holding the abandoned requests. A slot is
 submittable only when BOTH agree, which is what `busy_until` below encodes.
 """
-import fcntl
+import json
 import os
 import pathlib
 from datetime import datetime, timedelta, timezone
 
+from tdvms import compat
 from tdvms.ledger import IN_FLIGHT
 
 
@@ -54,38 +55,68 @@ class PoolHeld(Exception):
 
 def lock_path(address, root=None):
     """Where the pool lock for a base address lives. Per user, not per ledger."""
-    root = pathlib.Path(root or os.environ.get("XDG_STATE_HOME")
-                        or pathlib.Path.home() / ".local" / "state")
-    return root / "tdvms" / f"{address.strip().lower()}.lock"
+    base = pathlib.Path(root) / "tdvms" if root else compat.state_dir()
+    return base / f"{address.strip().lower()}.lock"
 
 
-def relabel(fh, ledger_path):
-    """Rewrites what a held pool lock says it is working on -- `queue` moving on."""
+def relabel(fh, ledger_path, **info):
+    """Rewrites what a held pool lock says about its holder.
+
+    JSON: the pid and ledger, plus whatever the run adds -- its command,
+    address, slots, download folder, log -- which is how `tdvms-tui` finds a
+    running download on any OS, `/proc` or not. `queue` calls this again each
+    time it moves to the next campaign.
+    """
     fh.seek(0)
     fh.truncate()
-    fh.write(f"pid {os.getpid()}, ledger {pathlib.Path(ledger_path).resolve()}\n")
+    fh.write(json.dumps({"pid": os.getpid(),
+                         "ledger": str(pathlib.Path(ledger_path).resolve()), **info}))
+    fh.write("\n")
     fh.flush()
+
+
+def describe(text):
+    """`"pid N, ledger PATH"` from a lock file's text, old format or new."""
+    try:
+        info = json.loads(text)
+        return f"pid {info['pid']}, ledger {info['ledger']}"
+    except (ValueError, KeyError, TypeError):
+        return text.strip() or "another process"
 
 
 def holder(address, root=None):
     """`"pid N, ledger PATH"` if a live process holds this pool, else None.
 
-    Probes with a non-blocking lock rather than trusting the file's text: the
-    text outlives its writer, the flock does not.
+    Probes the lock rather than trusting the file's text: the text outlives its
+    writer, the lock does not.
     """
     path = lock_path(address, root)
     if not path.exists():
         return None
     with open(path) as fh:
-        try:
-            fcntl.flock(fh, fcntl.LOCK_SH | fcntl.LOCK_NB)
-        except BlockingIOError:
-            return fh.read().strip() or "another process"
-        fcntl.flock(fh, fcntl.LOCK_UN)
+        if compat.held(fh):
+            return describe(fh.read())
     return None
 
 
-def hold(address, ledger_path, root=None):
+def holders(root=None):
+    """What every live run on this machine says about itself, as dicts."""
+    base = pathlib.Path(root) / "tdvms" if root else compat.state_dir()
+    out = []
+    for path in sorted(base.glob("*.lock")) if base.is_dir() else []:
+        try:
+            with open(path) as fh:
+                if not compat.held(fh):
+                    continue
+                info = json.loads(fh.read())
+        except (OSError, ValueError):
+            continue
+        if isinstance(info, dict) and "pid" in info:
+            out.append(info)
+    return out
+
+
+def hold(address, ledger_path, root=None, **info):
     """Takes the address pool for this process, or says who already has it.
 
     Two runs on one base address submit from the same `+aN` slots and read the
@@ -97,9 +128,8 @@ def hold(address, ledger_path, root=None):
 
     The lock is keyed by the address, not the ledger, because the collision is
     on the address. It lives in a per-user directory rather than next to the
-    ledger so two ledgers in two directories still meet on it, and it is an
-    flock, so the kernel drops it when the holder dies and it can never go
-    stale.
+    ledger so two ledgers in two directories still meet on it, and the OS drops
+    it when the holder dies, so it can never go stale.
 
     Returns:
         The open lock file. Keep a reference for as long as the pool is in use.
@@ -111,13 +141,13 @@ def hold(address, ledger_path, root=None):
     path.parent.mkdir(parents=True, exist_ok=True)
     fh = open(path, "a+")
     try:
-        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        compat.lock(fh, block=False)
     except BlockingIOError:
         fh.seek(0)
-        who = fh.read().strip()
+        who = describe(fh.read())
         fh.close()
-        raise PoolHeld(who or "another process") from None
-    relabel(fh, ledger_path)
+        raise PoolHeld(who) from None
+    relabel(fh, ledger_path, address=address, **info)
     return fh
 
 

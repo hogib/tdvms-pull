@@ -20,7 +20,7 @@ from textual.widgets import (Button, Checkbox, DataTable, Footer, Header, Input,
                              TabPane)
 from textual.widgets.option_list import Option
 
-from tdvms import catalog, coverage, credentials, disk, history, notify
+from tdvms import catalog, coverage, credentials, disk, history, notify, settings
 from tdvms import plan as planning
 from tdvms.ledger import IN_FLIGHT, age_seconds, chunk_id
 from tdvms.slots import holder
@@ -1069,21 +1069,29 @@ class PlanView(Vertical):
 
 
 def _address_hint(root):
-    """The address and pool size to suggest: a live run's, else a ledger's."""
-    runs = [r for r in model.live_runs() if r.address and not r.dry_run]
-    if runs:
-        return runs[0].address, runs[0].slots
-    for c in model.discover(root):
-        guess = model.infer_pool(c.ledger.rows())
-        if guess:
-            return guess
-    return credentials.resolve()["TDVMS_IMAP_USER"][0], None
+    """The address and pool size to suggest.
+
+    What Settings says first -- it is the operator's own choice -- then a live
+    run's, then what an existing ledger used.
+    """
+    address = settings.address()
+    try:
+        slots = settings.slots() if settings.get(settings.SLOTS)[0] else None
+    except ValueError:
+        slots = None
+    if not (address and slots):
+        runs = [r for r in model.live_runs() if r.address and not r.dry_run]
+        guesses = [(r.address, r.slots) for r in runs] + [
+            g for c in model.discover(root) if (g := model.infer_pool(c.ledger.rows()))]
+        if guesses:
+            address, slots = address or guesses[0][0], slots or guesses[0][1]
+    return address, slots or settings.DEFAULT_SLOTS
 
 
 def _home(p):
     """A path with the home directory written as `~`."""
     home = str(pathlib.Path.home())
-    return "~" + str(p)[len(home):] if str(p).startswith(home + "/") else str(p)
+    return "~" + str(p)[len(home):] if str(p).startswith(home + os.sep) else str(p)
 
 
 # --- Mailbox ------------------------------------------------------------------
@@ -1119,6 +1127,21 @@ class MailboxView(VerticalScroll):
             yield Button("Save", variant="primary", id="save")
         yield Static(id="cred-result")
         yield Static(
+            "[b]Download slots[/]\n\n"
+            "How many requests `run` and `queue` keep at the portal at once. The portal "
+            "handles one request per email address, so each slot is its own "
+            "plus-address — you+a1@…, you+a2@… — all delivering to the mailbox above. "
+            "More slots, more data in flight; 8 is a comfortable start.\n\n"
+            f"Used whenever --slots is not given. Saved to [b]{_home(settings.path())}[/]; "
+            "TDVMS_SLOTS in the environment takes precedence.", classes="intro section")
+        with Horizontal(classes="cred-row"):
+            yield Label("Slots", classes="cred-label")
+            yield Input(placeholder=str(settings.DEFAULT_SLOTS), id="slots",
+                        type="integer", max_length=3)
+        yield Static(id="slots-source", classes="cred-source")
+        with Horizontal(classes="cred-buttons"):
+            yield Button("Save", variant="primary", id="slots-save")
+        yield Static(
             "[b]Notifications[/]\n\n"
             "Where `run` and `queue` say so when a campaign finishes or needs you: the "
             "mailbox failing, the disk nearly full, every slot stuck on BUSY, nothing "
@@ -1140,6 +1163,7 @@ class MailboxView(VerticalScroll):
         for var, (value, _) in credentials.resolve().items():
             self.query_one(f"#v-{var}", Input).value = value or ""
         self.query_one("#notify", Input).value = ", ".join(notify.targets())
+        self.query_one("#slots", Input).value = settings.get(settings.SLOTS)[0] or ""
         self._sources()
 
     def _values(self):
@@ -1157,8 +1181,51 @@ class MailboxView(VerticalScroll):
             t.append("not set — no notifications", style="dim")
         self.query_one("#notify-source", Static).update(t)
 
+    def _typed_slots(self):
+        """The slot count typed, or None when the box is empty (meaning 8)."""
+        text = self.query_one("#slots", Input).value.strip()
+        if not text:
+            return None
+        n = int(text) if text.isdigit() else 0
+        if not 1 <= n <= 99:
+            raise ValueError("slots is a whole number from 1 to 99")
+        return n
+
+    def _slots_source(self):
+        t = Text("TDVMS_SLOTS: ", style="dim")
+        value, source = settings.get(settings.SLOTS)
+        if source and source.startswith("environment"):
+            t.append(f"{value}, from the environment, which overrides what is saved here",
+                     style="#ffd43b")
+        elif source:
+            t.append(f"{value}, saved in {_home(source)}", style="#69db7c")
+        else:
+            t.append(f"not set — {settings.DEFAULT_SLOTS} by default", style="dim")
+        base = self.query_one("#v-TDVMS_IMAP_USER", Input).value.strip()
+        try:
+            n = self._typed_slots() or settings.DEFAULT_SLOTS
+            if "@" in base:
+                from tdvms.slots import pool
+                first, *rest = pool(base, n)
+                t.append(f"\n{first}" + (f" … {rest[-1]}" if rest else ""), style="dim")
+        except ValueError as e:
+            t.append(f"\n{e}", style="#ff8787")
+        self.query_one("#slots-source", Static).update(t)
+
+    def _save_slots(self):
+        try:
+            n = self._typed_slots()
+        except ValueError as e:
+            self.notify(str(e), severity="error")
+            return
+        where = settings.save({settings.SLOTS: str(n) if n else ""})
+        self._slots_source()
+        self.notify(f"{n} slot(s) saved to {where}" if n
+                    else f"slots back to the default of {settings.DEFAULT_SLOTS}")
+
     def _sources(self):
         self._notify_source()
+        self._slots_source()
         typed = self._values()
         for var, (value, source) in credentials.resolve().items():
             t = Text(f"{var}: ", style="dim")
@@ -1184,6 +1251,9 @@ class MailboxView(VerticalScroll):
     def on_button_pressed(self, event):
         if event.button.id in ("notify-test", "notify-save"):
             self._notify_button(event)
+            return
+        if event.button.id == "slots-save":
+            self._save_slots()
             return
         values = self._values()
         missing = [label for var, label, *_ in self.FIELDS if not values[var]]

@@ -22,6 +22,7 @@ import json
 import pathlib
 import sys
 
+from tdvms import compat
 from tdvms.ledger import Ledger, age_seconds, now
 
 NAME = "adopt"
@@ -92,6 +93,7 @@ def run(args):
 
 
 def main():
+    compat.utf8_output()
     p = argparse.ArgumentParser(prog="tdvms adopt", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--ledger", default="tdvms_ledger.jsonl")

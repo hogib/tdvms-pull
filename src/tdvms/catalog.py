@@ -26,6 +26,7 @@ import math
 import pathlib
 from dataclasses import dataclass
 
+from tdvms import compat
 from tdvms.client import DEFAULT_NETCODES, STRONG_MOTION  # noqa: F401 -- re-exported
 
 DATA = pathlib.Path(__file__).parent / "data"
@@ -155,7 +156,7 @@ def _write(path, header, rows):
     w.writerows(rows)
     tmp = pathlib.Path(path).with_suffix(".tmp")
     tmp.write_text(buf.getvalue())
-    tmp.replace(path)
+    compat.replace(tmp, path)
 
 
 def main():

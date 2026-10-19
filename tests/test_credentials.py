@@ -4,12 +4,13 @@ The file exists so someone who has never exported a variable can still run a
 campaign. It must never shadow what an operator did export, and it holds a
 password, so it is never readable by anyone else -- not even for an instant.
 """
+import shutil
 import stat
 import subprocess
 
 import pytest
 
-from tdvms import credentials
+from tdvms import compat, credentials
 from tdvms.mailbox import Mailbox
 
 TRICKY = """p@ss w'o"rd $HOME `x`"""
@@ -29,6 +30,7 @@ def save(**kw):
     return credentials.write_file(values)
 
 
+@pytest.mark.skipif(compat.WINDOWS, reason="Windows uses an ACL; see test_compat")
 def test_the_file_is_private_from_the_first_byte():
     p = save()
     assert stat.S_IMODE(p.stat().st_mode) == 0o600
@@ -40,6 +42,7 @@ def test_a_password_with_quotes_and_dollars_survives_the_round_trip():
     assert credentials.read_file()["TDVMS_IMAP_PASS"] == TRICKY
 
 
+@pytest.mark.skipif(compat.WINDOWS or not shutil.which("bash"), reason="needs bash")
 def test_the_file_can_be_sourced_by_a_shell_and_means_the_same_thing():
     p = save()
     out = subprocess.run(["bash", "-c", f'. "{p}"; printf %s "$TDVMS_IMAP_PASS"'],

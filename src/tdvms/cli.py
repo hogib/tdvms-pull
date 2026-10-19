@@ -38,6 +38,8 @@ def usage():
 
 
 def main():
+    from tdvms import compat
+    compat.utf8_output()
     argv = sys.argv[1:]
     if not argv or argv[0] in ("-h", "--help", "help"):
         return usage()

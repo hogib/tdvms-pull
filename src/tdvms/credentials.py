@@ -6,16 +6,20 @@ Three variables, looked up in this order for each one:
 
 1. `TDVMS_IMAP_*` in the environment,
 2. `AFAD_IMAP_*` in the environment (the older campaign tool's names),
-3. `~/.config/tdvms/mailbox.env` (`$XDG_CONFIG_HOME` respected).
+3. `mailbox.env` in the config folder: `$XDG_CONFIG_HOME/tdvms`,
+   `%APPDATA%\\tdvms` on Windows, else `~/.config/tdvms` (see `compat`).
 
 The environment always wins, so an operator who exports credentials -- by hand,
 from direnv, from a secrets manager -- gets exactly what they exported, and the
-file only fills in what nobody set. The file is written 0600 in a directory
-that is 0700, and in shell syntax so it can also be `source`d.
+file only fills in what nobody set. The file is readable by its owner only
+(0600, or an owner-only ACL on Windows), and in shell syntax so it can also be
+`source`d.
 """
 import os
 import pathlib
 import shlex
+
+from tdvms import compat
 
 VARS = ("TDVMS_IMAP_HOST", "TDVMS_IMAP_USER", "TDVMS_IMAP_PASS")
 LEGACY = {"TDVMS_IMAP_HOST": "AFAD_IMAP_HOST", "TDVMS_IMAP_USER": "AFAD_IMAP_USER",
@@ -23,8 +27,7 @@ LEGACY = {"TDVMS_IMAP_HOST": "AFAD_IMAP_HOST", "TDVMS_IMAP_USER": "AFAD_IMAP_USE
 
 
 def path():
-    root = os.environ.get("XDG_CONFIG_HOME") or pathlib.Path.home() / ".config"
-    return pathlib.Path(root) / "tdvms" / "mailbox.env"
+    return compat.config_dir() / "mailbox.env"
 
 
 def read_file(p=None, keys=VARS):
@@ -53,7 +56,8 @@ def write_file(values, p=None, keys=VARS, what="mailbox credentials"):
     """
     p = pathlib.Path(p or path())
     p.parent.mkdir(parents=True, exist_ok=True)
-    os.chmod(p.parent, 0o700)
+    if not compat.WINDOWS:
+        os.chmod(p.parent, 0o700)
     body = [f"# tdvms {what} -- written by tdvms-tui.",
             "# Environment variables of the same name take precedence."]
     body += [f"{k}={shlex.quote(values.get(k) or '')}" for k in keys]
@@ -61,7 +65,10 @@ def write_file(values, p=None, keys=VARS, what="mailbox credentials"):
     fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as fh:
         fh.write("\n".join(body) + "\n")
-    os.replace(tmp, p)
+    compat.replace(tmp, p)
+    if compat.WINDOWS:
+        # The mode above means nothing to NTFS; an ACL does.
+        compat.private(p)
     return p
 
 

@@ -18,25 +18,25 @@ Targets, any number of them:
 
 * an ntfy topic URL (`https://ntfy.sh/your-topic`) or any URL that accepts a
   POST -- the body is the message, the title goes in a `Title` header;
-* `desktop`, through `notify-send` (Linux) or `osascript` (macOS).
+* `desktop`, through `notify-send` (Linux), `osascript` (macOS) or PowerShell
+  (Windows).
 
-They come from `--notify`, else `TDVMS_NOTIFY` (comma-separated), else the
-file `tdvms-tui` saves. A failed notification is logged and never stops the
-loop.
+They come from `--notify`, else `TDVMS_NOTIFY` (comma-separated), else what
+`tdvms-tui` saved (see `settings`). A failed notification is logged and never
+stops the loop.
 """
 import os
-import pathlib
 import shutil
 import subprocess
 
-from tdvms import credentials
+from tdvms import compat, settings
 from tdvms.ledger import age_seconds
 
-ENV = "TDVMS_NOTIFY"
+ENV = settings.NOTIFY
 
 
 def path():
-    return credentials.path().with_name("notify.env")
+    return settings.path()
 
 
 def split(text):
@@ -47,10 +47,7 @@ def targets(cli=None, environ=None, saved_path=None):
     """`--notify` if given, else the environment, else the saved file."""
     if cli:
         return list(cli)
-    environ = os.environ if environ is None else environ
-    if environ.get(ENV):
-        return split(environ[ENV])
-    return split(credentials.read_file(saved_path or path(), keys=(ENV,)).get(ENV))
+    return split(settings.get(ENV, environ, saved_path)[0])
 
 
 class Notifier:
@@ -83,7 +80,27 @@ class Notifier:
         return failed
 
 
+# A tray balloon, which Windows 10 and 11 show as a toast. Needs nothing
+# installed. The title and body reach it as environment variables, never as
+# script text: `-Command` appends trailing arguments to the script itself, so
+# a title passed that way would be run as code.
+BALLOON = (
+    "Add-Type -AssemblyName System.Windows.Forms, System.Drawing; "
+    "$n = New-Object System.Windows.Forms.NotifyIcon; "
+    "$n.Icon = [System.Drawing.SystemIcons]::Information; "
+    "$n.BalloonTipTitle = $env:TDVMS_NOTE_TITLE; $n.BalloonTipText = $env:TDVMS_NOTE_BODY; "
+    "$n.Visible = $true; $n.ShowBalloonTip(10000); Start-Sleep -Seconds 6; $n.Dispose()")
+
+
 def _desktop(title, body):
+    if compat.WINDOWS:
+        shell = shutil.which("powershell") or shutil.which("pwsh")
+        if not shell:
+            raise RuntimeError("no PowerShell on this machine")
+        env = dict(os.environ, TDVMS_NOTE_TITLE=title, TDVMS_NOTE_BODY=body)
+        subprocess.run([shell, "-NoProfile", "-NonInteractive", "-Command", BALLOON],
+                       env=env, check=True, timeout=30, capture_output=True)
+        return
     if shutil.which("notify-send"):
         subprocess.run(["notify-send", "--app-name=tdvms", title, body],
                        check=True, timeout=10)
@@ -195,5 +212,4 @@ class Watch:
 
 def save(value, p=None):
     """Stores the targets for `run` to find; what the TUI's Save does."""
-    return credentials.write_file({ENV: value}, pathlib.Path(p or path()), keys=(ENV,),
-                                  what="notification targets")
+    return settings.save({ENV: value}, p)

@@ -33,10 +33,11 @@ Without the stamp such a row sat forever: SLV held a slot for a day and a half
 looking indistinguishable from mail that was merely slow.
 """
 import contextlib
-import fcntl
 import json
 import pathlib
 from datetime import datetime, timedelta, timezone
+
+from tdvms import compat
 
 # In flight at the portal, and therefore holding an address's queue slot.
 IN_FLIGHT = ("claimed", "submitted")
@@ -102,7 +103,7 @@ class Ledger:
         """
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text("".join(json.dumps(r) + "\n" for r in rows))
-        tmp.replace(self.path)
+        compat.replace(tmp, self.path)
 
     @contextlib.contextmanager
     def locked(self):
@@ -113,12 +114,14 @@ class Ledger:
         """
         self.path.parent.mkdir(parents=True, exist_ok=True)
         lock = self.path.with_suffix(self.path.suffix + ".lock")
-        with open(lock, "w") as fh:
-            fcntl.flock(fh, fcntl.LOCK_EX)
+        # "a", not "w": truncating a file another process holds a lock in is
+        # refused on Windows.
+        with open(lock, "a") as fh:
+            compat.lock(fh)
             try:
                 yield
             finally:
-                fcntl.flock(fh, fcntl.LOCK_UN)
+                compat.unlock(fh)
 
     # --- queries (no lock; callers that mutate take one) --------------------
 

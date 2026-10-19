@@ -42,6 +42,7 @@ left off.
 - [Running for days](#running-for-days)
 - [Mailbox setup](#mailbox-setup)
 - [Notifications](#notifications)
+- [Where tdvms keeps things](#where-tdvms-keeps-things)
 - [Catalogs](#catalogs)
 - [Troubleshooting](#troubleshooting)
 - [Development](#development)
@@ -55,8 +56,8 @@ left off.
   Gmail does this. A mailbox used only for this tool is the easiest setup.
 - **Disk space.** Broadband stations come to roughly 0.5 GB per station per
   three weeks of data, with wide variation between stations.
-- Linux. macOS works too, but the terminal UI can't see which downloads are
-  running there, because it finds them through `/proc`.
+- **Linux, macOS or Windows.** Commands below are shown for a POSIX shell, with
+  the PowerShell form wherever it differs.
 
 ## Install
 
@@ -85,21 +86,27 @@ uv run tdvms-tui
 **2. Set up the mailbox (F3).** Enter your IMAP server, address and password,
 press **Test connection**, then **Save**. For Gmail, use `imap.gmail.com` and an
 [app password](https://myaccount.google.com/apppasswords), not your account
-password. Optionally, add a [notification](#notifications) target on the same
-screen.
+password. On the same screen, set how many **slots** to use (download requests
+in flight at once; 8 is a good start) and, optionally, a
+[notification](#notifications) target.
 
 **3. Plan a download (F2).** Move around the map and press `space` on the
 stations you want. Or press `e` to choose an earthquake: every station within
 the radius is picked and the dates are set around the event. Name the campaign
 and press **Plan**.
 
-**4. Start it.** The UI shows the exact command, ready to copy:
+**4. Start it.** The UI shows the exact command for your OS, ready to copy:
 
 ```bash
 setsid nohup uv run tdvms run --ledger campaigns/van-2011/ledger.jsonl \
-    --out-dir campaigns/van-2011/raw --address you@gmail.com --slots 8 \
-    >> campaigns/van-2011/run.log 2>&1 &
+    --address you@gmail.com --slots 8 --log campaigns/van-2011/run.log > /dev/null 2>&1 &
 ```
+
+```powershell
+Start-Process -WindowStyle Hidden uv -ArgumentList 'run tdvms run --ledger campaigns\van-2011\ledger.jsonl --address you@gmail.com --slots 8 --log campaigns\van-2011\run.log'
+```
+
+Either way it keeps running after you close the terminal.
 
 **5. Watch it (F1).** Progress, the slots in use, every window, the live log,
 and how much of each station's period the archives really cover. Archives
@@ -109,12 +116,15 @@ The same without the UI:
 
 ```bash
 export TDVMS_IMAP_HOST=imap.gmail.com TDVMS_IMAP_USER=you@gmail.com
-export TDVMS_IMAP_PASS='<app password>'
+export TDVMS_IMAP_PASS='<app password>'      # PowerShell: $env:TDVMS_IMAP_PASS = '...'
 
 uv run tdvms plan --ledger elba.jsonl --station ELBA --start 2024-01-01 --end 2024-07-01
-uv run tdvms run  --ledger elba.jsonl --address you@gmail.com --slots 8
+uv run tdvms run  --ledger elba.jsonl --slots 8
 uv run tdvms coverage --ledger elba.jsonl
 ```
+
+The slots are made from the mailbox address (`you+a1@gmail.com`, …), so
+`--address` is only needed when the two differ.
 
 ## Concepts
 
@@ -203,10 +213,15 @@ station forever, so this only warns.
 
 ### Settings (F3)
 
-The three mailbox settings and the notification targets, each showing where its
-current value comes from (the environment or the saved file), with a button to
-test each before you **Save**. See [Mailbox setup](#mailbox-setup) and
-[Notifications](#notifications).
+- **Mailbox**: server, address and password, with **Test connection**.
+- **Download slots**: how many requests run at once, with a preview of the
+  addresses that makes (`you+a1@gmail.com … you+a15@gmail.com`). `run` and
+  `queue` use it whenever `--slots` isn't given.
+- **Notifications**: where to send them, with **Send a test**.
+
+Each shows where its current value comes from: the environment, which always
+wins, or the saved file. See [Mailbox setup](#mailbox-setup),
+[Notifications](#notifications) and [Where tdvms keeps things](#where-tdvms-keeps-things).
 
 ## Command-line reference
 
@@ -262,8 +277,9 @@ tdvms run --ledger my.jsonl --address you@gmail.com --slots 8
 
 | option | default | |
 |---|---|---|
-| `--address EMAIL` | required | your **base** address; slots are made from it |
-| `--slots N` | `8` | how many plus-addresses to use at once |
+| `--address EMAIL` | the mailbox address | your **base** address; slots are made from it |
+| `--slots N` | saved setting, else `8` | how many plus-addresses to use at once (`TDVMS_SLOTS` also works) |
+| `--log FILE` | the terminal | append all output to `FILE`; for starting it detached on any OS |
 | `--out-dir DIR` | the campaign's folder | where archives go: `DIR/<STATION>/<STATION>_<date>.zip`. Default: `campaigns/<name>/raw`, or `<name>_raw` next to `<name>_ledger.jsonl`, else `afad_raw` |
 | `--station CODE` | all | only request these stations (repeatable) |
 | `--interval SECONDS` | `60` | pause between cycles |
@@ -385,14 +401,19 @@ only read, never changed.
 Start the downloader detached, so it outlives your terminal:
 
 ```bash
-setsid nohup uv run tdvms run --ledger my.jsonl \
-    --address you@gmail.com --slots 8 >> my_run.log 2>&1 &
+setsid nohup uv run tdvms run --ledger my.jsonl --log my_run.log > /dev/null 2>&1 &
 ```
 
-A `tmux` or `screen` session works just as well.
+```powershell
+Start-Process -WindowStyle Hidden uv -ArgumentList 'run tdvms run --ledger my.jsonl --log my_run.log'
+```
 
-- **Stopping.** `kill -INT <pid>` or `kill -TERM <pid>` (or Ctrl-C in a
-  terminal). Nothing is lost: anything in flight is picked up by the next `run`.
+A `tmux` or `screen` session, or a terminal window left open, works just as
+well.
+
+- **Stopping.** `kill -INT <pid>` or `kill -TERM <pid>`; on Windows,
+  `Stop-Process -Id <pid>`; or Ctrl-C in its terminal. The terminal UI shows
+  the pid. Nothing is lost: anything in flight is picked up by the next `run`.
 - **One download per address.** Two downloads using the same base address would
   share slots and read each other's mail. A second one is refused, with a
   message naming the first.
@@ -422,8 +443,10 @@ tdvms needs three settings:
 
 Set them in either of two ways:
 
-- **In the terminal UI (F3).** They're saved to `~/.config/tdvms/mailbox.env`,
-  readable only by you. You can also `source` that file in a shell.
+- **In the terminal UI (F3).** They're saved to `mailbox.env` (see
+  [Where tdvms keeps things](#where-tdvms-keeps-things)), readable only by you:
+  file permissions on Linux and macOS, an owner-only access list on Windows.
+  On Linux and macOS you can also `source` the file in a shell.
 - **As environment variables**, by hand, from a `.envrc`, or from a secrets
   manager.
 
@@ -456,13 +479,31 @@ A target is any of:
   else to set up. A self-hosted ntfy server works the same way.
 - **any URL that accepts a POST**. The message is the body; the title is in a
   `Title` header.
-- **`desktop`**: a desktop notification through `notify-send` (Linux) or
-  `osascript` (macOS).
+- **`desktop`**: a desktop notification through `notify-send` (Linux),
+  `osascript` (macOS) or PowerShell (Windows).
 
 Set them in the terminal UI (Settings, F3; **Send a test** checks them), in
 `TDVMS_NOTIFY` (comma-separated), or with `--notify`. The command line wins, then
-the environment, then the saved file (`~/.config/tdvms/notify.env`). A
-notification that fails is logged and never stops the download.
+the environment, then the saved file (`settings.env`). A notification that fails
+is logged and never stops the download.
+
+## Where tdvms keeps things
+
+| | Linux and macOS | Windows |
+|---|---|---|
+| mailbox credentials (`mailbox.env`) | `~/.config/tdvms/` | `%APPDATA%\tdvms\` |
+| slots and notifications (`settings.env`) | `~/.config/tdvms/` | `%APPDATA%\tdvms\` |
+| one lock per address in use | `~/.local/state/tdvms/` | `%LOCALAPPDATA%\tdvms\` |
+| campaigns, ledgers, downloads | wherever you run it | wherever you run it |
+
+`XDG_CONFIG_HOME` and `XDG_STATE_HOME` move the first three on any OS. A lock
+file also says what its download is doing (pid, campaign, log), which is how
+the terminal UI finds running downloads.
+
+A campaign's downloads can sit on another disk (choose the folder when
+planning). `campaigns/<name>/raw` then links to it, or, where the OS won't make
+a link (Windows without Developer Mode), a `raw.path` file next to the ledger
+names the folder instead.
 
 ## Catalogs
 
