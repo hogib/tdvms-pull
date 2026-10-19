@@ -8,7 +8,6 @@ filled, with nothing owning the pair.
 """
 import email.message
 
-import pytest
 
 from conftest import message
 from tdvms.mailbox import (Foreign, Link, NoData, Unrelated, classify,

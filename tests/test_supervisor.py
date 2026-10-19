@@ -7,9 +7,9 @@ the rewrite is that they are now expressible as one assertion about one process.
 import pytest
 
 from conftest import (Accepted, AcceptedUnconfirmed, Busy, FakeMailbox,
-                      FakePortal, Rejected, chunk, message, write)
+                      FakePortal, Rejected, chunk, write)
 from tdvms.ledger import now
-from tdvms.mailbox import Foreign, Link, NoData
+from tdvms.mailbox import Foreign, NoData
 from tdvms.slots import Pool
 from tdvms.supervisor import Config, cycle
 
@@ -242,6 +242,7 @@ def test_a_dry_run_changes_nothing(ledger_path, cfg):
     cycle(led, Pool("you@gmail.com", 1), cfg, None, portal, log=quiet)
     assert portal.calls == []
     assert led.by_id("ELBA:2025-09-09T00:00:00")["state"] == "pending"
+    assert ledger_path.read_text() == before
 
 
 def test_an_empty_campaign_says_so_rather_than_looping(ledger_path, cfg):

@@ -9,7 +9,7 @@ import zipfile
 
 import pytest
 
-from conftest import chunk, write
+from conftest import chunk
 from tdvms import fetch
 
 

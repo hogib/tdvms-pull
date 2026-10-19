@@ -35,7 +35,7 @@ looking indistinguishable from mail that was merely slow.
 import contextlib
 import json
 import pathlib
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 
 from tdvms import compat
 

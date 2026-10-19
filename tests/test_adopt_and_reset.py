@@ -4,13 +4,11 @@ Both are about identity. The old ledger had no chunk id, so `reset` matched by
 date across every station in the file; and it had no retry counter and stamps
 that a reset could invert.
 """
-import json
 
 import pytest
 
 from conftest import chunk, write
 from tdvms.adopt import convert
-from tdvms.ledger import Ledger
 from tdvms.reset import resolve
 
 

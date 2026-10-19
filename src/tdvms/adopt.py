@@ -23,7 +23,7 @@ import pathlib
 import sys
 
 from tdvms import compat
-from tdvms.ledger import Ledger, age_seconds, now
+from tdvms.ledger import Ledger, now
 
 NAME = "adopt"
 HELP = "import an afad_campaign ledger (read-only on the source)"

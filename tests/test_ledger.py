@@ -7,10 +7,9 @@ ledger, so both are pinned here.
 """
 import json
 
-import pytest
 
 from conftest import chunk, write
-from tdvms.ledger import Ledger, age_seconds, chunk_id
+from tdvms.ledger import age_seconds
 
 
 def test_a_chunk_is_named_by_station_and_start(ledger_path):

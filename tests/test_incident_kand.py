@@ -13,13 +13,12 @@ the tool let it:
    ledger already written, so nothing was lost -- but the loop stopped.
 3. Nothing validated the station code at plan time, where the fix is one word.
 """
-import json
 
 import pytest
 
 from conftest import FakeMailbox, FakePortal, Rejected, chunk, write
 from tdvms.ledger import now
-from tdvms.mailbox import Link, NoData
+from tdvms.mailbox import NoData
 from tdvms.plan import normalise, verify
 from tdvms.slots import Pool
 from tdvms.supervisor import Config, cycle

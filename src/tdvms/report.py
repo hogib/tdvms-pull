@@ -11,7 +11,7 @@ import argparse
 import sys
 
 from tdvms import compat
-from tdvms.ledger import IN_FLIGHT, Ledger, age_seconds, chunk_id
+from tdvms.ledger import Ledger, age_seconds, chunk_id
 
 NAME = "status"
 HELP = "what the campaign has done, and what is stuck"
