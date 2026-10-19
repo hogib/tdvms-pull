@@ -119,7 +119,8 @@ def test_a_redirected_log_is_utf8_whatever_the_locale(monkeypatch):
     compat.utf8_output()
     print("2025-01-01 → 2025-01-02 — gap", file=stream)
     stream.flush()
-    assert raw.getvalue().decode("utf-8") == "2025-01-01 → 2025-01-02 — gap\n"
+    # Windows ends the line with \r\n; the encoding is what is being tested.
+    assert raw.getvalue().decode("utf-8").rstrip() == "2025-01-01 → 2025-01-02 — gap"
 
 
 # --- private files ------------------------------------------------------------------

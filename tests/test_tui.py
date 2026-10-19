@@ -197,8 +197,11 @@ def test_a_stray_on_another_disk_is_copied_before_it_is_filed(tmp_path, monkeypa
         if os.fspath(p) == os.fspath(path):
             fields = list(st[:10])
             fields[2] += 1                     # st_dev: another disk
+            # Everything copy2 may read back: macOS copies st_flags too.
             return os.stat_result(fields, {k: getattr(st, k) for k in (
-                "st_atime_ns", "st_mtime_ns", "st_ctime_ns")})
+                "st_atime_ns", "st_mtime_ns", "st_ctime_ns", "st_flags",
+                "st_birthtime", "st_file_attributes", "st_reparse_tag")
+                if hasattr(st, k)})
         return st
     monkeypatch.setattr(os, "stat", stat)
     renamed = []
@@ -239,11 +242,12 @@ def test_an_orphan_is_neither_filed_nor_deleted(tmp_path):
 
 def test_a_log_tail_starts_on_a_whole_line_and_follows_growth(tmp_path):
     log = tmp_path / "run.log"
-    log.write_text("".join(f"line {i}\n" for i in range(100)))
+    # Bytes, not text: a run's log is a byte stream whatever the OS's newline.
+    log.write_bytes(b"".join(b"line %d\n" % i for i in range(100)))
     text, off = model.tail(log, None, keep=30)
     assert text.splitlines()[0].startswith("line ") and text.endswith("line 99\n")
-    with open(log, "a") as fh:
-        fh.write("line 100\n")
+    with open(log, "ab") as fh:
+        fh.write(b"line 100\n")
     assert model.tail(log, off) == ("line 100\n", off + 9)
 
 
