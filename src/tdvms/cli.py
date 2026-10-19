@@ -18,6 +18,7 @@ COMMANDS = {
     "status": ("tdvms.report", "what the campaign has done, and what is stuck"),
     "reset":  ("tdvms.reset",  "requeue one chunk, by station and start"),
     "ingest": ("tdvms.ingest", "file an already-downloaded archive"),
+    "coverage": ("tdvms.coverage", "what the downloaded archives actually cover, and the gaps"),
 }
 
 
