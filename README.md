@@ -259,8 +259,22 @@ tdvms plan --ledger my.jsonl --station ELBA --start 2023-01-01 --end 2024-01-01
 |---|---|---|
 | `--station CODE` | required | station code as the portal lists it, e.g. `ELBA`; a network prefix like `TU.` is dropped |
 | `--start DATE`, `--end DATE` | `2024-05-01`, `2026-08-10` | the date range, `YYYY-MM-DD` |
-| `--chunk-days N` | `21` | window length |
+| `--chunk-days N` | `21` (`1` with `--every-days`) | window length |
+| `--every-days N` | | sample instead of covering: start a window every N days and skip the time between |
 | `--no-verify` | | skip checking the code against the portal's station list |
+
+To sample a long period instead of downloading all of it, use `--every-days`.
+This pulls one day a week:
+
+```bash
+tdvms plan --ledger my.jsonl --station ELBA --start 2020-01-01 --end 2025-01-01 --every-days 7
+```
+
+Add `--chunk-days` for longer samples. For example, `--chunk-days 2 --every-days 7`
+pulls two days a week. Windows can't be longer than the stride. The coverage
+report measures against the planned windows, so the skipped days don't show up
+as gaps. In the terminal UI, the same setting is the **every … days** field
+next to the window length. Leave it blank for back-to-back windows.
 
 If an earlier campaign in the same folder found that this station returned no
 data, `plan` says so and for which period, then plans anyway.

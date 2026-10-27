@@ -24,7 +24,7 @@ from tdvms import fetch as fetching
 from tdvms.campaign import CAMPAIGNS, NAME_RE, Campaign, discover, new_campaign  # noqa: F401
 from tdvms.campaign import for_ledger as campaign_for
 from tdvms.ledger import IN_FLIGHT, TERMINAL, chunk_id, now
-from tdvms.plan import enumerate_chunks
+from tdvms.plan import enumerate_chunks, windows
 from tdvms.report import summarise
 from tdvms.slots import Pool, holders
 
@@ -241,30 +241,18 @@ def reset(campaign, cid):
 
 # --- planning -----------------------------------------------------------------
 
-def windows(start, end, chunk_days):
-    """The `(start, end)` pairs `plan` would enumerate, as ISO strings."""
-    t, stop, out = datetime.fromisoformat(start), datetime.fromisoformat(end), []
-    if chunk_days < 1:
-        raise ValueError("a window is at least one day")
-    while t < stop:
-        nxt = min(t + timedelta(days=chunk_days), stop)
-        out.append((t.isoformat(), nxt.isoformat()))
-        t = nxt
-    return out
-
-
-def preview(rows, codes, start, end, chunk_days):
+def preview(rows, codes, start, end, chunk_days, every_days=None):
     """`(total, new)` chunks a plan would touch. Nothing is written."""
     have = {chunk_id(r["station"], r["start"]) for r in rows}
-    spans = windows(start, end, chunk_days)
+    spans = windows(start, end, chunk_days, every_days)
     total = len(codes) * len(spans)
     new = sum(1 for c in codes for s, _ in spans if chunk_id(c, s) not in have)
     return total, new
 
 
-def apply_plan(campaign, codes, start, end, chunk_days):
+def apply_plan(campaign, codes, start, end, chunk_days, every_days=None):
     """Enumerates the windows into the ledger exactly as `tdvms plan` does."""
-    return sum(enumerate_chunks(campaign.ledger, c, start, end, chunk_days)
+    return sum(enumerate_chunks(campaign.ledger, c, start, end, chunk_days, every_days)
                for c in codes)
 
 

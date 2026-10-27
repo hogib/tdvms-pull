@@ -1,6 +1,9 @@
 """Enumerate a station's windows into the ledger. Idempotent, always.
 
     tdvms plan --station ELBA --start 2024-05-01 --end 2026-08-10 --chunk-days 21
+    tdvms plan --station ELBA --start 2024-05-01 --end 2026-08-10 --every-days 7
+
+The second samples rather than covers: one 1-day window every week.
 
 Re-running never duplicates a chunk and never re-requests one. That matters more
 than it sounds: extending a campaign's end date is the normal way to add work,
@@ -16,6 +19,9 @@ from tdvms.ledger import Ledger, chunk_id
 
 NAME = "plan"
 HELP = "enumerate a station's chunks into the ledger (idempotent)"
+
+CHUNK_DAYS = 21           # window length when covering the whole period
+SAMPLE_DAYS = 1           # window length when sampling with --every-days
 
 
 def normalise(code):
@@ -80,25 +86,53 @@ def add_args(p):
                         "slot per window later.")
     p.add_argument("--start", default="2024-05-01")
     p.add_argument("--end", default="2026-08-10")
-    p.add_argument("--chunk-days", type=int, default=21,
-                   help="21 is what this campaign has run on throughout; longer "
-                        "windows are not obviously worse but are unmeasured here")
+    p.add_argument("--chunk-days", type=int, default=None,
+                   help=f"window length; {CHUNK_DAYS} by default, {SAMPLE_DAYS} "
+                        f"with --every-days. {CHUNK_DAYS} is what this campaign has "
+                        f"run on throughout; longer windows are not obviously worse "
+                        f"but are unmeasured here")
+    p.add_argument("--every-days", type=int, default=None,
+                   help="sample instead of covering: start a window every N days. "
+                        "--every-days 7 pulls one day a week")
     return p
 
 
-def enumerate_chunks(ledger, station, start, end, chunk_days):
+def windows(start, end, chunk_days, every_days=None):
+    """The `(start, end)` pairs to plan, as ISO strings.
+
+    Back to back by default. With `every_days`, a window opens every that many
+    days and the time between windows is never requested -- a sample of the
+    period rather than all of it. The last window stops at `end` either way.
+
+    Raises:
+        ValueError: On a window under a day, or one longer than its stride,
+            which would request the overlap twice.
+    """
+    if every_days is None:
+        every_days = chunk_days
+    if chunk_days < 1:
+        raise ValueError("a window is at least one day")
+    if every_days < chunk_days:
+        raise ValueError(f"{chunk_days}-day windows every {every_days} days "
+                         f"would overlap")
+    t, stop, out = datetime.fromisoformat(start), datetime.fromisoformat(end), []
+    while t < stop:
+        out.append((t.isoformat(), min(t + timedelta(days=chunk_days), stop).isoformat()))
+        t += timedelta(days=every_days)
+    return out
+
+
+def enumerate_chunks(ledger, station, start, end, chunk_days, every_days=None):
     """Appends the missing windows. Caller holds no lock; this takes it."""
+    spans = windows(start, end, chunk_days, every_days)
     with ledger.locked():
         rows = ledger.rows()
         have = {chunk_id(r["station"], r["start"]) for r in rows}
-        t, added = datetime.fromisoformat(start), 0
-        stop = datetime.fromisoformat(end)
-        while t < stop:
-            nxt = min(t + timedelta(days=chunk_days), stop)
-            if chunk_id(station, t.isoformat()) not in have:
-                rows.append(ledger.add(station, t.isoformat(), nxt.isoformat()))
+        added = 0
+        for s, e in spans:
+            if chunk_id(station, s) not in have:
+                rows.append(ledger.add(station, s, e))
                 added += 1
-            t = nxt
         ledger._write(rows)
     return added
 
@@ -114,12 +148,19 @@ def run(args):
     if warning and warning.warning():
         print(f"  [!] {warning.warning()}\n"
               f"      planned anyway -- no-data is about a period, not forever")
+    chunk_days = args.chunk_days
+    if chunk_days is None:
+        chunk_days = SAMPLE_DAYS if args.every_days else CHUNK_DAYS
     ledger = Ledger(args.ledger)
-    added = enumerate_chunks(ledger, station, args.start, args.end,
-                             args.chunk_days)
+    try:
+        added = enumerate_chunks(ledger, station, args.start, args.end,
+                                 chunk_days, args.every_days)
+    except ValueError as e:
+        sys.exit(f"[ERROR] {e}")
     rows = ledger.rows()
     pending = sum(1 for r in rows if r["state"] == "pending")
-    print(f"planned {added} new chunk(s) for {station} at {args.chunk_days} d")
+    every = f", one every {args.every_days} d" if args.every_days else ""
+    print(f"planned {added} new chunk(s) for {station} at {chunk_days} d{every}")
     print(f"ledger holds {len(rows)} chunk(s), {pending} pending")
     return 0
 

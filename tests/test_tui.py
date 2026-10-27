@@ -134,6 +134,44 @@ def test_the_preview_counts_exactly_what_the_plan_then_adds(tmp_path):
     assert model.apply_plan(c, ["ELBA", "CTKS"], "2025-01-01", "2025-04-01", 21) == 0
 
 
+def test_sampling_plans_one_day_a_week_and_nothing_between():
+    spans = model.windows("2025-01-01", "2025-01-31", 1, 7)
+    assert spans == [(f"2025-01-{d:02d}T00:00:00", f"2025-01-{d + 1:02d}T00:00:00")
+                     for d in (1, 8, 15, 22, 29)]
+    assert model.windows("2025-01-01", "2025-01-31", 21) == \
+        model.windows("2025-01-01", "2025-01-31", 21, 21)
+
+
+def test_a_sampled_plan_is_idempotent_and_previewed_exactly(tmp_path):
+    c = model.new_campaign(tmp_path, "t")
+    total, new = model.preview([], ["ELBA"], "2025-01-01", "2025-04-01", 1, 7)
+    assert (total, new) == (13, 13)
+    assert model.apply_plan(c, ["ELBA"], "2025-01-01", "2025-04-01", 1, 7) == 13
+    assert model.apply_plan(c, ["ELBA"], "2025-01-01", "2025-04-01", 1, 7) == 0
+    assert all(r["end"][:10] > r["start"][:10] for r in c.ledger.rows())
+
+
+def test_windows_longer_than_their_stride_are_refused():
+    with pytest.raises(ValueError, match="overlap"):
+        model.windows("2025-01-01", "2025-02-01", 7, 3)
+
+
+def test_plan_every_days_alone_means_one_day_windows(tmp_path):
+    import argparse
+    from tdvms import plan
+    p = argparse.ArgumentParser()
+    p.add_argument("--ledger")
+    plan.add_args(p)
+    led = tmp_path / "l.jsonl"
+    plan.run(p.parse_args(["--ledger", str(led), "--station", "ELBA", "--no-verify",
+                           "--start", "2025-01-01", "--end", "2025-01-29",
+                           "--every-days", "7"]))
+    rows = [json.loads(l) for l in led.read_text(encoding="utf-8").splitlines()]
+    assert [(r["start"][:10], r["end"][:10]) for r in rows] == [
+        ("2025-01-01", "2025-01-02"), ("2025-01-08", "2025-01-09"),
+        ("2025-01-15", "2025-01-16"), ("2025-01-22", "2025-01-23")]
+
+
 def test_a_month_is_moved_by_calendar_and_clamped():
     assert model.add_months(date(2024, 3, 31), -1) == date(2024, 2, 29)
     assert model.add_months(date(2020, 1, 24), -6) == date(2019, 7, 24)
@@ -294,6 +332,41 @@ def test_earthquake_mode_plans_a_new_campaign_end_to_end(tmp_path):
             (tmp_path / "campaigns" / "van-2011" / "ledger.jsonl").read_text().splitlines()]
     assert {r["station"] for r in rows} == set(from_["codes"])
     assert (tmp_path / "campaigns" / "van-2011" / "raw").is_dir()
+
+
+def test_the_plan_form_samples_one_day_a_week(tmp_path):
+    seen = {}
+
+    async def script(app, pilot):
+        from textual.widgets import Input, Static
+        from tdvms.tui.app import PlanView
+        await pilot.press("f2")
+        await pilot.pause(0.3)
+        pv = app.query_one(PlanView)
+        pv.query_one("#start", Input).value = "2025-01-01"
+        pv.query_one("#end", Input).value = "2025-01-29"
+        pv.query_one("#every", Input).value = "7"
+        await pilot.pause(0.2)
+        seen["overlap"] = str(pv.query_one("#preview", Static).render())
+        pv.query_one("#chunk", Input).value = "1"
+        pv.query_one("#new-name", Input).value = "weekly"
+        s = next(s for s in pv.stations if s.code == "ELBA")
+        pv.picked[s.key] = s
+        pv._preview()
+        await pilot.pause(0.2)
+        seen["preview"] = str(pv.query_one("#preview", Static).render())
+        await pilot.click("#go")
+        await pilot.pause(0.2)
+        await pilot.press("y")
+        await pilot.pause(0.3)
+
+    _drive(tmp_path, script)
+    assert "would overlap" in seen["overlap"]
+    assert "4 window(s) of 1 d, one every 7 d" in seen["preview"]
+    rows = [json.loads(l) for l in
+            (tmp_path / "campaigns" / "weekly" / "ledger.jsonl").read_text().splitlines()]
+    assert [r["start"][:10] for r in rows] == ["2025-01-01", "2025-01-08",
+                                                "2025-01-15", "2025-01-22"]
 
 
 def test_a_chunk_is_reset_from_the_chunks_tab_only_after_confirming(tmp_path):

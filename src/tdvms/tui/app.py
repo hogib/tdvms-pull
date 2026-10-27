@@ -49,7 +49,7 @@ def plan_defaults():
     """`tdvms plan`'s own defaults, read from its parser so the two agree."""
     p = argparse.ArgumentParser()
     planning.add_args(p)
-    return p.get_default("start"), p.get_default("end"), p.get_default("chunk_days")
+    return p.get_default("start"), p.get_default("end"), planning.CHUNK_DAYS
 
 
 # --- dialogs ------------------------------------------------------------------
@@ -709,6 +709,8 @@ class PlanView(Vertical):
             yield Input(end, id="end", classes="date")
             yield Label("Window")
             yield Input(str(chunk), id="chunk", classes="num")
+            yield Label("days, every")
+            yield Input(placeholder="—", id="every", classes="num")
             yield Label("days")
             yield Button("Earthquake… (e)", id="eq")
         with Horizontal(classes="form-row"):
@@ -945,12 +947,15 @@ class PlanView(Vertical):
 
     # --- preview and plan --------------------------------------------------
 
-    @on(Input.Changed, "#start, #end, #chunk, #new-name")
+    @on(Input.Changed, "#start, #end, #chunk, #every, #new-name")
     def _inputs(self, event):
         self._preview()
 
     def _form(self):
-        """`(codes, start, end, chunk, problems)` from the form as it stands."""
+        """`(codes, start, end, chunk, every, problems)` from the form as it stands.
+
+        `every` is None when blank: windows back to back, the whole period.
+        """
         problems = []
         try:
             start = date.fromisoformat(self.query_one("#start", Input).value.strip())
@@ -967,6 +972,15 @@ class PlanView(Vertical):
         except ValueError:
             chunk = None
             problems.append("the window is a whole number of days")
+        every = self.query_one("#every", Input).value.strip() or None
+        if every is not None:
+            try:
+                every = int(every)
+                if chunk and every < chunk:
+                    problems.append(f"{chunk}-day windows every {every} days would overlap")
+            except ValueError:
+                every = None
+                problems.append("every is a whole number of days, or blank for back to back")
         if self.query_one("#target", Select).value == NEW:
             name = self.query_one("#new-name", Input).value.strip()
             if not model.NAME_RE.match(name):
@@ -976,19 +990,20 @@ class PlanView(Vertical):
         if not self.picked:
             problems.append("pick at least one station")
         codes = sorted({s.code for s in self.picked.values()})
-        return codes, start, end, chunk, problems
+        return codes, start, end, chunk, every, problems
 
     def _preview(self):
-        codes, start, end, chunk, problems = self._form()
+        codes, start, end, chunk, every, problems = self._form()
         t = Text()
         c = self.target()
-        if start and end and chunk and codes:
+        if start and end and chunk and codes and (every is None or every >= chunk):
             rows = c.ledger.rows() if c else []
             total, new = model.preview(rows, codes, start.isoformat(), end.isoformat(),
-                                       chunk)
-            n = len(model.windows(start.isoformat(), end.isoformat(), chunk))
-            t.append(f"{len(codes)} station(s) × {n} window(s) of {chunk} d = {total} chunk(s)",
-                     style="bold")
+                                       chunk, every)
+            n = len(model.windows(start.isoformat(), end.isoformat(), chunk, every))
+            sampled = f", one every {every} d" if every else ""
+            t.append(f"{len(codes)} station(s) × {n} window(s) of {chunk} d{sampled} "
+                     f"= {total} chunk(s)", style="bold")
             t.append(f" — {new} new")
             if total - new:
                 t.append(f", {total - new} already in {c.name}")
@@ -1023,7 +1038,7 @@ class PlanView(Vertical):
         return out
 
     def action_plan(self):
-        codes, start, end, chunk, problems = self._form()
+        codes, start, end, chunk, every, problems = self._form()
         if problems:
             self.notify(problems[0], severity="error")
             return
@@ -1038,14 +1053,15 @@ class PlanView(Vertical):
             name, raw = c.name, None
             into = f"[b]{c.name}[/] ({c.path.name})"
         body = (f"{len(codes)} station(s): {', '.join(codes)}\n"
-                f"{start} → {end}, {chunk}-day windows\ninto {into}")
+                f"{start} → {end}, {chunk}-day windows"
+                f"{f' every {every} days' if every else ''}\ninto {into}")
 
         def done(yes):
             if not yes:
                 return
             try:
                 target = c or model.new_campaign(self.root, name, raw or None)
-                added = model.apply_plan(target, codes, start, end, chunk)
+                added = model.apply_plan(target, codes, start, end, chunk, every)
             except (ValueError, OSError) as e:
                 self.notify(str(e), severity="error")
                 return
