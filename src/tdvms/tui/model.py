@@ -19,11 +19,11 @@ from collections import Counter
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 
-from tdvms import compat
+from tdvms import compat, fdsn
 from tdvms import fetch as fetching
 from tdvms.campaign import CAMPAIGNS, NAME_RE, Campaign, discover, new_campaign  # noqa: F401
 from tdvms.campaign import for_ledger as campaign_for
-from tdvms.ledger import IN_FLIGHT, TERMINAL, chunk_id, now
+from tdvms.ledger import IN_FLIGHT, TERMINAL, Ledger, chunk_id, now
 from tdvms.plan import enumerate_chunks, windows
 from tdvms.report import summarise
 from tdvms.slots import Pool, holders
@@ -430,3 +430,47 @@ def tail(path, offset=None, keep=64 * 1024):
     if mid_line:
         data = data.partition(b"\n")[2]
     return data.decode("utf-8", errors="replace"), size
+
+
+# --- FDSN pulls -------------------------------------------------------------------
+
+@dataclass
+class FdsnPull:
+    """A campaign's `tdvms fdsn` ledger, as the FDSN tab shows it."""
+    path: pathlib.Path
+    rows: list
+    live: dict | None     # what the running pull says about itself; None if none runs
+
+    def counts(self, station=None):
+        return Counter(r["state"] for r in self.rows
+                       if station is None or r["station"] == station)
+
+    def stations(self):
+        return sorted({r["station"] for r in self.rows})
+
+    def rate(self, window=3600, reference=None):
+        """Days given an outcome per hour, over the last `window` seconds.
+
+        Over less when the live pull started more recently than that: its first
+        minutes are not an hour of anything.
+        """
+        ref = reference or datetime.now().astimezone()
+        started = (self.live or {}).get("started")
+        if started:
+            window = max(60, min(window, (ref - datetime.fromisoformat(started)).total_seconds()))
+        recent = 0
+        for r in self.rows:
+            if (r["state"] in TERMINAL and r.get("fetched_at")
+                    and r.get("note") != fdsn.ADOPTED):
+                t = datetime.fromisoformat(r["fetched_at"])
+                if 0 <= (ref - t).total_seconds() <= window:
+                    recent += 1
+        return recent * 3600 / window
+
+
+def fdsn_pull(campaign):
+    """The campaign's FDSN pull, or None if it never had one."""
+    path = fdsn.state_path(campaign)
+    if not path.exists():
+        return None
+    return FdsnPull(path, Ledger(path).rows(), fdsn.holder(path))

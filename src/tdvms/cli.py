@@ -19,6 +19,7 @@ COMMANDS = {
     "reset":  ("tdvms.reset",  "requeue one chunk, by station and start"),
     "ingest": ("tdvms.ingest", "file an already-downloaded archive"),
     "coverage": ("tdvms.coverage", "what the downloaded archives actually cover, and the gaps"),
+    "fdsn":   ("tdvms.fdsn",   "fetch whole days of a station from an FDSN service (KOERI)"),
 }
 
 

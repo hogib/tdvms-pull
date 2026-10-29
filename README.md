@@ -185,6 +185,7 @@ it waits its turn in a running `tdvms queue`.
 | Log | the running download's output, live | |
 | Strays | archives a download kept but couldn't match to its own campaign | `i` file it into the campaign that wants it, `d` delete a duplicate |
 | Coverage | per station and channel: how much of the period the archives cover, the gaps, and a timeline | |
+| FDSN | the campaign's `tdvms fdsn` pull: live or not, progress per station, pace and time left, every day with its hours of data | |
 
 ### Plan (F2)
 
@@ -241,6 +242,7 @@ tdvms <command> [options]          tdvms <command> --help for every option
 | `reset` | put one window back in the queue |
 | `ingest` | file an archive that is already on disk |
 | `adopt` | import a ledger from the older `afad_campaign` tool |
+| `fdsn` | fetch whole days of a station from an FDSN service (KOERI by default) |
 
 Every command takes `--ledger PATH`, which defaults to `tdvms_ledger.jsonl` in
 the current folder.
@@ -411,6 +413,36 @@ tdvms adopt --ledger my.jsonl --from old_campaign_ledger.jsonl
 
 Imports a ledger written by the older `afad_campaign` tool. The source file is
 only read, never changed.
+
+### `tdvms fdsn`
+
+```bash
+tdvms fdsn --ledger my.jsonl --station SVRC --start 2015-07-01 --end 2016-07-01
+tdvms fdsn --ledger my.jsonl --station SVRC --days-file days.txt
+```
+
+Fetches whole UTC days of one station from an FDSN dataselect service, for days
+the portal has no data for. KOERI (Kandilli) is the default and serves the KO
+network: SVRC, for one, has 2015-2016 there and almost nothing at TDVMS. There
+is no queue or mail; each day is one request, answered at once.
+
+Progress goes to a second ledger beside the campaign's (`<name>_fdsn.jsonl`, or
+`fdsn.jsonl` in a campaign folder), one row per day, which the TUI's FDSN tab
+shows. Days are filed as `<name>_fdsn_raw/<STATION>/KO_SVRC_<DDMMYYYY>_000000_…_BH.mseed`,
+TDVMS's own member naming, so tools that read TDVMS downloads read these too.
+Running the same command again adds only new days and carries on; a day whose
+file is already on disk is counted, not downloaded again.
+
+| option | default | |
+|---|---|---|
+| `--station CODE` | required | |
+| `--start DATE`, `--end DATE` / `--day DATE` / `--days-file FILE` | | the days; `--end` is the day after the last |
+| `--network`, `--channels` | `KO`, `BH?` | |
+| `--service URL` | `http://eida.koeri.boun.edu.tr` | any FDSN web service |
+| `--out-dir DIR` | `<name>_fdsn_raw` | |
+| `--retries N` | `5` | tries per day before it is recorded `failed` |
+| `--retry-failed` | | put failed days back to pending first |
+| `--plan-only` | | add the days and stop |
 
 ## Running for days
 

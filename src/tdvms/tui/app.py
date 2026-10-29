@@ -6,6 +6,7 @@ Drawing only. What a screen shows and every change it makes comes from
 import argparse
 import os
 import pathlib
+import time
 from datetime import date
 from functools import partial
 
@@ -259,6 +260,9 @@ class CampaignsView(Vertical):
                 with TabPane("Coverage", id="t-coverage"):
                     yield Static(id="cov-status", classes="hint")
                     yield DataTable(id="coverage", cursor_type="row", zebra_stripes=True)
+                with TabPane("FDSN", id="t-fdsn"):
+                    yield Static(id="fdsn-status")
+                    yield DataTable(id="fdsn", cursor_type="row", zebra_stripes=True)
 
     def on_mount(self):
         self.query_one("#ledgers").border_title = "Ledgers"
@@ -275,6 +279,9 @@ class CampaignsView(Vertical):
         for name in ("station", "channel", "covered", "gaps ≥1 min", "largest gap",
                      "requested period →"):
             t.add_column(name, key=name)
+        t = self.query_one("#fdsn", DataTable)
+        for name in ("day", "station", "state", "hours", "size", "when", "note"):
+            t.add_column(name, key=name)
         self.tick()
         self.set_interval(2, self.tick)
 
@@ -290,7 +297,8 @@ class CampaignsView(Vertical):
     def _tab(self, event):
         # Focus the tab's table so its keys work, and show in the footer, at once.
         target = {"t-slots": "#slots", "t-chunks": "#chunks", "t-log": "#log",
-                  "t-strays": "#strays", "t-coverage": "#coverage"}.get(event.pane.id)
+                  "t-strays": "#strays", "t-coverage": "#coverage",
+                  "t-fdsn": "#fdsn"}.get(event.pane.id)
         if target:
             self.query_one(target).focus()
         self.refresh_bindings()
@@ -328,6 +336,8 @@ class CampaignsView(Vertical):
             self._strays_table()
         elif tab == "t-coverage":
             self._coverage(c, mtime)
+        elif tab == "t-fdsn":
+            self._fdsn(c)
         self._tail(c, run)
 
     def _ledger_list(self):
@@ -575,6 +585,95 @@ class CampaignsView(Vertical):
                           str(len(gaps)),
                           f"{coverage.fmt_seconds(big.seconds)} ({big.why})" if big else "",
                           line, key=ch.cid)
+
+    # --- FDSN pull ---------------------------------------------------------
+
+    def _fdsn(self, c):
+        pull = model.fdsn_pull(c)
+        try:
+            mtime = pull.path.stat().st_mtime_ns if pull else None
+        except OSError:
+            mtime = None
+        # The claimed day's age changes every tick even when the ledger does not.
+        sig = ("fdsn", c.name, mtime, pull and pull.live is not None,
+               int(time.time() // 10))
+        if self._sig.get("fdsn") == sig:
+            return
+        self._sig["fdsn"] = sig
+        status = self.query_one("#fdsn-status", Static)
+        t = self.query_one("#fdsn", DataTable)
+        keep = t.cursor_row
+        t.clear()
+        if pull is None:
+            status.update(Text(
+                f"No FDSN pull for {c.name}. Whole days from KOERI (or any FDSN service):\n"
+                f"  tdvms fdsn --ledger {c.path.name} --station CODE "
+                f"--start YYYY-MM-DD --end YYYY-MM-DD", style="dim"))
+            return
+        s = Text()
+        if pull.live is not None:
+            s.append("● live", style="bold #69db7c")
+            s.append(f"  pid {pull.live.get('pid', '?')} · {pull.live.get('service', '')} "
+                     f"→ {pull.live.get('out_dir', '')}\n")
+        else:
+            s.append("○ not running", style="dim")
+            s.append(f"  · {pull.path.name}\n", style="dim")
+        for station in pull.stations():
+            n = pull.counts(station)
+            total = sum(n.values())
+            done = sum(n[x] for x in ("fetched", "nodata", "failed", "retired"))
+            filled = round(10 * done / total) if total else 0
+            gb = sum(r.get("bytes") or 0 for r in pull.rows
+                     if r["station"] == station and r["state"] == "fetched") / 1e9
+            s.append(f"{station:<6}")
+            s.append("█" * filled + "░" * (10 - filled),
+                     style="#69db7c" if done == total else "#4ea8ff")
+            s.append(f" {done}/{total}  ")
+            for state in ("fetched", "nodata", "failed", "claimed", "pending"):
+                if n[state]:
+                    s.append(f"{state} {n[state]}  ", style=STATE_STYLE.get(state, ""))
+            s.append(f"{gb:.1f} GB\n", style="dim")
+        short = sum(1 for r in pull.rows if r["state"] == "fetched" and r.get("hours")
+                    and min(r["hours"].values()) < 20)
+        left = pull.counts()["pending"] + pull.counts()["claimed"]
+        rate = pull.rate()
+        if pull.live is not None and left:
+            s.append(f"{rate:.0f} day(s)/h lately" if rate else
+                     "no day finished lately", style="dim")
+            if rate:
+                s.append(f", about {fmt_age(left / rate * 3600)} left", style="dim")
+            s.append("\n")
+        elif left:
+            s.append(f"{left} day(s) not fetched; run the same `tdvms fdsn` again to carry "
+                     f"on\n", style="#ffd43b")
+        if short:
+            s.append(f"{short} fetched day(s) have under 20 h of data\n", style="#ffd43b")
+        status.update(s)
+
+        # The day being fetched, then the latest outcomes, then what is still to come.
+        claimed = [r for r in pull.rows if r["state"] == "claimed"]
+        settled = sorted((r for r in pull.rows if r["state"] not in ("claimed", "pending")),
+                         key=lambda r: r.get("fetched_at") or "", reverse=True)
+        pending = sorted((r for r in pull.rows if r["state"] == "pending"),
+                         key=lambda r: r["start"])
+        for r in claimed + settled + pending:
+            hours = r.get("hours") or {}
+            low = min(hours.values()) if hours else None
+            stamp = r.get("claimed_at") if r["state"] == "claimed" else r.get("fetched_at")
+            when = ""
+            if r["state"] == "claimed":
+                when = f"for {fmt_age(age_seconds(stamp))}"
+            elif stamp:
+                when = f"{fmt_age(age_seconds(stamp))} ago"
+            t.add_row(r["start"][:10], r["station"],
+                      Text(r["state"], style=STATE_STYLE.get(r["state"], "")),
+                      Text(f"{low:.1f} h", style="#ffd43b" if low < 20 else "")
+                      if low is not None else "",
+                      f"{(r.get('bytes') or 0) / 1e6:.0f} MB" if r.get("bytes") else "",
+                      when, (r.get("note") or "")[:60],
+                      key=chunk_id(r["station"], r["start"]))
+        if t.row_count:
+            t.move_cursor(row=min(keep, t.row_count - 1))
 
     # --- repairs -----------------------------------------------------------
 

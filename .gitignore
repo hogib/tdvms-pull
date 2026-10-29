@@ -5,7 +5,9 @@ __pycache__/
 # archives are tens of gigabytes; neither belongs in the repo.
 tdvms_ledger.jsonl
 *_ledger.jsonl
+*_fdsn.jsonl
 *.jsonl.lock
+*.jsonl.run
 *.jsonl.tmp
 *_raw
 campaigns/
